@@ -1,7 +1,0 @@
-{
-  "duplicates" : {
-    "test-duplicates\\dir1\\file1.txt" : [ "test-duplicates\\dir1\\file1.txt", "test-duplicates\\file1.txt" ]
-  },
-  "totalDuplicateGroups" : 1,
-  "timestamp" : "2026-01-28T21:32:34.148293300"
-}

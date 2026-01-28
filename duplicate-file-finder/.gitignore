@@ -37,3 +37,29 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### Duplicate Finder Specific ###
+# Export files
+duplicate_files_*.json
+duplicate_files_*.csv
+
+# Cache files
+duplicate_finder_cache.properties
+
+# Test directories
+test-duplicates/
+test-results/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# IDE specific files
+*.swp
+*.swo
+*~
+
+# OS specific files
+Thumbs.db
+desktop.ini
