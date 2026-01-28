@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -19,6 +20,8 @@ import java.util.stream.Collectors;
 public class DuplicateDetector {
     
     private static final Logger logger = LoggerFactory.getLogger(DuplicateDetector.class);
+    private static final int THREAD_POOL_SIZE = Runtime.getRuntime().availableProcessors();
+    
     private boolean caseInsensitive = false;
     private Consumer<Integer> progressListener;
 
@@ -104,34 +107,70 @@ public class DuplicateDetector {
 
     /**
      * Groups files by CRC32 checksum (expensive operation).
+     * Uses parallel processing for better performance.
      */
     private Map<String, List<String>> groupByCrc32(Map<String, List<FileInfo>> groupedByNameAndSize) {
-        Map<Long, List<FileInfo>> groupedByCrc = new HashMap<>();
+        Map<Long, List<FileInfo>> groupedByCrc = new ConcurrentHashMap<>();
         AtomicInteger processedCount = new AtomicInteger(0);
-        int totalToProcess = (int) groupedByNameAndSize.values().stream()
-            .mapToInt(List::size)
-            .count();
+        
+        // Collect all files that need CRC32 computation
+        List<FileInfo> allFiles = groupedByNameAndSize.values().stream()
+            .flatMap(List::stream)
+            .collect(Collectors.toList());
+        
+        int totalToProcess = allFiles.size();
+        logger.info("Computing CRC32 for {} candidate files using {} threads", totalToProcess, THREAD_POOL_SIZE);
 
-        for (List<FileInfo> fileList : groupedByNameAndSize.values()) {
-            for (FileInfo file : fileList) {
-                try {
-                    long crc32 = HashUtil.computeCrc32(java.nio.file.Paths.get(file.getPath()));
-                    file.setCrc32(crc32);
-                    
-                    groupedByCrc.computeIfAbsent(crc32, k -> new ArrayList<>()).add(file);
-                    
-                    int processed = processedCount.incrementAndGet();
-                    if (processed % 10 == 0) {
-                        logger.debug("CRC32 computed for {} files", processed);
-                        if (progressListener != null) {
-                            progressListener.accept(processed);
+        // Create thread pool for parallel CRC32 computation
+        ExecutorService executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+        List<Future<?>> futures = new ArrayList<>();
+
+        try {
+            // Submit tasks for parallel CRC32 computation
+            for (FileInfo file : allFiles) {
+                Future<?> future = executor.submit(() -> {
+                    try {
+                        long crc32 = HashUtil.computeCrc32(java.nio.file.Paths.get(file.getPath()));
+                        file.setCrc32(crc32);
+                        
+                        groupedByCrc.computeIfAbsent(crc32, k -> new ArrayList<>()).add(file);
+                        
+                        int processed = processedCount.incrementAndGet();
+                        if (processed % 10 == 0) {
+                            logger.debug("CRC32 computed for {} of {} files", processed, totalToProcess);
+                            if (progressListener != null) {
+                                progressListener.accept(processed);
+                            }
                         }
+                    } catch (Exception e) {
+                        logger.error("Failed to compute CRC32 for file: {}", file.getPath(), e);
                     }
-                } catch (Exception e) {
-                    logger.error("Failed to compute CRC32 for file: {}", file.getPath(), e);
+                });
+                futures.add(future);
+            }
+
+            // Wait for all tasks to complete
+            for (Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    logger.error("Error during CRC32 computation", e);
                 }
             }
+
+        } finally {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
+
+        logger.info("CRC32 computation completed. Processed {} files", processedCount.get());
 
         // Convert to final format: group by CRC32, return original file + duplicates
         Map<String, List<String>> result = new HashMap<>();

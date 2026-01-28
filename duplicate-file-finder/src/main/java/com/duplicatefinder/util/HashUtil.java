@@ -6,23 +6,37 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Instant;
 import java.util.zip.CRC32;
 
 /**
- * Utility class for computing file checksums (CRC32).
+ * Utility class for computing file checksums (CRC32) with caching support.
  */
 public class HashUtil {
     private static final Logger logger = LoggerFactory.getLogger(HashUtil.class);
     private static final int BUFFER_SIZE = 8192;
-
+    private static final CacheManager cacheManager = new CacheManager();
+    
     /**
-     * Computes CRC32 checksum for a file.
+     * Computes CRC32 checksum for a file with caching support.
      *
      * @param path Path to the file
      * @return CRC32 checksum value
      * @throws IOException if file cannot be read
      */
     public static long computeCrc32(Path path) throws IOException {
+        // Get file attributes for cache validation
+        BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
+        Instant lastModified = attrs.lastModifiedTime().toInstant();
+        
+        // Check cache first
+        Long cachedChecksum = cacheManager.getCachedChecksum(path, lastModified);
+        if (cachedChecksum != null) {
+            return cachedChecksum;
+        }
+        
+        // Compute checksum
         CRC32 crc = new CRC32();
         byte[] buffer = new byte[BUFFER_SIZE];
         
@@ -36,7 +50,36 @@ public class HashUtil {
             throw e;
         }
         
-        return crc.getValue();
+        long checksum = crc.getValue();
+        
+        // Cache the result
+        cacheManager.putChecksum(path, checksum, lastModified);
+        
+        return checksum;
+    }
+    
+    /**
+     * Saves the checksum cache to disk.
+     * Should be called when application exits.
+     */
+    public static void saveCache() {
+        cacheManager.saveCache();
+    }
+    
+    /**
+     * Clears the checksum cache.
+     */
+    public static void clearCache() {
+        cacheManager.clearCache();
+    }
+    
+    /**
+     * Gets cache statistics.
+     * 
+     * @return Number of cached entries
+     */
+    public static int getCacheSize() {
+        return cacheManager.getCacheSize();
     }
 
     /**
