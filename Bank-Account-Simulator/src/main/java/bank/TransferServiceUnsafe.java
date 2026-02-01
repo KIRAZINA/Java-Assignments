@@ -16,6 +16,9 @@ public class TransferServiceUnsafe {
      * This may cause race conditions and inconsistent balances.
      */
     public boolean transfer(BankAccount from, BankAccount to, long amount) {
+        if (from == null || to == null) {
+            throw new IllegalArgumentException("Accounts cannot be null");
+        }
         if (from == to) {
             return false; // cannot transfer to the same account
         }
@@ -36,6 +39,9 @@ public class TransferServiceUnsafe {
      * Generate a random transfer between two accounts.
      */
     public boolean randomTransfer(BankAccount[] accounts, long maxAmount) {
+        if (accounts == null || accounts.length < 2) {
+            throw new IllegalArgumentException("Accounts array cannot be null and must contain at least 2 accounts");
+        }
         int fromIndex = random.nextInt(accounts.length);
         int toIndex = random.nextInt(accounts.length);
         long amount = 1 + random.nextInt((int) maxAmount);

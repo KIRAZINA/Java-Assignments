@@ -1,6 +1,7 @@
 package bank;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Represents a bank account with thread-safe balance operations.
@@ -12,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class BankAccount {
     private final int id;
     private final AtomicLong balance; // AtomicLong for monitoring, but not enough alone for transfers
+    private final ReentrantLock lock = new ReentrantLock();
 
     public BankAccount(int id, long initialBalance) {
         this.id = id;
@@ -26,6 +28,10 @@ public class BankAccount {
         return balance.get();
     }
 
+    public ReentrantLock getLock() {
+        return lock;
+    }
+
     /**
      * Deposit money into the account.
      * Safe version will synchronize to ensure atomicity.
@@ -33,6 +39,10 @@ public class BankAccount {
     public void deposit(long amount) {
         if (amount <= 0) {
             throw new IllegalArgumentException("Deposit amount must be positive");
+        }
+        long currentBalance = balance.get();
+        if (currentBalance > Long.MAX_VALUE - amount) {
+            throw new ArithmeticException("Balance overflow detected");
         }
         balance.addAndGet(amount);
     }

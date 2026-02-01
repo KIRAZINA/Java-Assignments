@@ -1,7 +1,6 @@
 package bank;
 
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -26,16 +25,13 @@ public class TransferServiceLock {
             return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
         }
 
-        BankAccount first = from.getId() < to.getId() ? from : to;
-        BankAccount second = from.getId() < to.getId() ? to : from;
-
-        ReentrantLock lock1 = new ReentrantLock();
-        ReentrantLock lock2 = new ReentrantLock();
+        BankAccount firstLock = from.getId() < to.getId() ? from : to;
+        BankAccount secondLock = from.getId() < to.getId() ? to : from;
 
         try {
-            if (lock1.tryLock(100, TimeUnit.MILLISECONDS)) {
+            if (firstLock.getLock().tryLock(100, TimeUnit.MILLISECONDS)) {
                 try {
-                    if (lock2.tryLock(100, TimeUnit.MILLISECONDS)) {
+                    if (secondLock.getLock().tryLock(100, TimeUnit.MILLISECONDS)) {
                         try {
                             if (!from.withdraw(amount)) {
                                 return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
@@ -50,13 +46,13 @@ public class TransferServiceLock {
                             }
 
                         } finally {
-                            lock2.unlock();
+                            secondLock.getLock().unlock();
                         }
                     } else {
                         return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
                     }
                 } finally {
-                    lock1.unlock();
+                    firstLock.getLock().unlock();
                 }
             } else {
                 return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);

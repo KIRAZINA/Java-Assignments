@@ -55,43 +55,60 @@ public class SimulationRunner {
         CountDownLatch latch = new CountDownLatch(numTransfers);
         Random random = new Random();
 
-        for (int i = 0; i < numTransfers; i++) {
-            executor.submit(() -> {
-                int fromIndex = random.nextInt(accounts.length);
-                int toIndex = random.nextInt(accounts.length);
-                long amount = 1 + random.nextInt(50);
+        try {
+            for (int i = 0; i < numTransfers; i++) {
+                executor.submit(() -> {
+                    try {
+                        int fromIndex = random.nextInt(accounts.length);
+                        int toIndex = random.nextInt(accounts.length);
+                        long amount = 1 + random.nextInt(50);
 
-                TransactionRecord record;
+                        TransactionRecord record;
 
-                if (service instanceof TransferServiceUnsafe) {
-                    boolean success = ((TransferServiceUnsafe) service)
-                            .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                    record = new TransactionRecord(accounts[fromIndex].getId(),
-                            accounts[toIndex].getId(), amount,
-                            success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
-                } else if (service instanceof TransferServiceSynchronized) {
-                    boolean success = ((TransferServiceSynchronized) service)
-                            .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                    record = new TransactionRecord(accounts[fromIndex].getId(),
-                            accounts[toIndex].getId(), amount,
-                            success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
-                } else if (service instanceof TransferServiceLock) {
-                    record = ((TransferServiceLock) service)
-                            .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                } else {
-                    record = new TransactionRecord(accounts[fromIndex].getId(),
-                            accounts[toIndex].getId(), amount, TransactionRecord.Status.FAILED);
+                        if (service instanceof TransferServiceUnsafe) {
+                            boolean success = ((TransferServiceUnsafe) service)
+                                    .transfer(accounts[fromIndex], accounts[toIndex], amount);
+                            record = new TransactionRecord(accounts[fromIndex].getId(),
+                                    accounts[toIndex].getId(), amount,
+                                    success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
+                        } else if (service instanceof TransferServiceSynchronized) {
+                            boolean success = ((TransferServiceSynchronized) service)
+                                    .transfer(accounts[fromIndex], accounts[toIndex], amount);
+                            record = new TransactionRecord(accounts[fromIndex].getId(),
+                                    accounts[toIndex].getId(), amount,
+                                    success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
+                        } else if (service instanceof TransferServiceLock) {
+                            record = ((TransferServiceLock) service)
+                                    .transfer(accounts[fromIndex], accounts[toIndex], amount);
+                        } else {
+                            record = new TransactionRecord(accounts[fromIndex].getId(),
+                                    accounts[toIndex].getId(), amount, TransactionRecord.Status.FAILED);
+                        }
+
+                        // Optional: log or store record
+                        // System.out.println(record);
+
+                    } catch (Exception e) {
+                        System.err.println("Error in transfer thread: " + e.getMessage());
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+
+            latch.await();
+        } finally {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    System.err.println("Executor did not terminate gracefully, forcing shutdown");
+                    executor.shutdownNow();
                 }
-
-                // Optional: log or store record
-                // System.out.println(record);
-
-                latch.countDown();
-            });
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                executor.shutdownNow();
+            }
         }
-
-        latch.await();
-        executor.shutdown();
     }
 
     private static long totalBalance(BankAccount[] accounts) {

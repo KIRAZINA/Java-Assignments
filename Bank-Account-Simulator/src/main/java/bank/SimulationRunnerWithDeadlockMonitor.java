@@ -19,6 +19,7 @@ public class SimulationRunnerWithDeadlockMonitor {
 
         BankAccount[] accounts = initAccounts(numAccounts, initialBalance);
         long totalBefore = totalBalance(accounts);
+        TransferServiceLock sharedService = new TransferServiceLock(); // Shared instance
 
         ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
@@ -37,17 +38,24 @@ public class SimulationRunnerWithDeadlockMonitor {
                         barrier.await();
                     } catch (InterruptedException | BrokenBarrierException e) {
                         Thread.currentThread().interrupt();
+                        System.err.println("Thread interrupted while waiting for barrier: " + e.getMessage());
+                        return;
                     }
 
-                    int fromIndex = random.get().nextInt(accounts.length);
-                    int toIndex = random.get().nextInt(accounts.length);
-                    long amount = 1 + random.get().nextInt(50);
+                    try {
+                        int fromIndex = random.get().nextInt(accounts.length);
+                        int toIndex = random.get().nextInt(accounts.length);
+                        long amount = 1 + random.get().nextInt(50);
 
-                    TransferServiceLock service = new TransferServiceLock();
-                    TransactionRecord record = service.transfer(accounts[fromIndex], accounts[toIndex], amount);
+                        TransactionRecord record = sharedService.transfer(accounts[fromIndex], accounts[toIndex], amount);
 
-                    System.out.println(record);
-                    latch.countDown();
+                        System.out.println(record);
+                    } catch (Exception e) {
+                        System.err.println("Error in transfer operation: " + e.getMessage());
+                        e.printStackTrace();
+                    } finally {
+                        latch.countDown();
+                    }
                 });
             }
 
@@ -79,8 +87,22 @@ public class SimulationRunnerWithDeadlockMonitor {
         // Let simulation run for 30 seconds
         Thread.sleep(30_000);
 
+        // Graceful shutdown
         scheduler.shutdown();
         executor.shutdown();
+        
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            scheduler.shutdownNow();
+            executor.shutdownNow();
+        }
 
         long totalAfter = totalBalance(accounts);
         System.out.printf("\nFinal total balance: before=%d, after=%d%n", totalBefore, totalAfter);

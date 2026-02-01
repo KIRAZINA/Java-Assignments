@@ -29,6 +29,22 @@ public class TransactionRecord {
         return status;
     }
 
+    public int getFromId() {
+        return fromId;
+    }
+
+    public int getToId() {
+        return toId;
+    }
+
+    public long getAmount() {
+        return amount;
+    }
+
+    public long getTimestamp() {
+        return timestamp;
+    }
+
     @Override
     public String toString() {
         return String.format("Transaction[from=%d, to=%d, amount=%d, status=%s, time=%d]",
