@@ -6,42 +6,63 @@ import java.util.concurrent.TimeUnit;
 /**
  * TransferService (ReentrantLock + Rollback + Rate-Limiting)
  *
- * Adds:
+ * Features:
  * - Semaphore to limit concurrent transfers
+ * - Lock ordering to prevent deadlocks
+ * - Timeout-based locking with tryLock
+ * - Automatic rollback on deposit failure
  */
 public class TransferServiceLock {
 
-    // Allow max 5 concurrent transfers
-    private final Semaphore semaphore = new Semaphore(5);
+    // Constants for configuration
+    private static final int MAX_CONCURRENT_TRANSFERS = 5;
+    private static final long LOCK_TIMEOUT_MS = 100;
+
+    // Allow max concurrent transfers
+    private final Semaphore semaphore = new Semaphore(MAX_CONCURRENT_TRANSFERS);
 
     public TransactionRecord transfer(BankAccount from, BankAccount to, long amount) {
+        // Null checks
+        if (from == null || to == null) {
+            throw new IllegalArgumentException("Accounts cannot be null");
+        }
+        
+        // Cannot transfer to same account
         if (from == to) {
             return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
         }
 
-        boolean acquired = semaphore.tryAcquire();
-        if (!acquired) {
-            // Too many concurrent transfers → reject
-            return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
-        }
-
-        BankAccount firstLock = from.getId() < to.getId() ? from : to;
-        BankAccount secondLock = from.getId() < to.getId() ? to : from;
-
+        // Try to acquire semaphore permit
+        boolean acquired = false;
         try {
-            if (firstLock.getLock().tryLock(100, TimeUnit.MILLISECONDS)) {
+            acquired = semaphore.tryAcquire();
+            if (!acquired) {
+                // Too many concurrent transfers - reject
+                return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
+            }
+
+            // Lock ordering to prevent deadlocks: always lock account with smaller ID first
+            BankAccount firstLock = from.getId() < to.getId() ? from : to;
+            BankAccount secondLock = from.getId() < to.getId() ? to : from;
+
+            // Try to acquire first lock
+            if (firstLock.getLock().tryLock(LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 try {
-                    if (secondLock.getLock().tryLock(100, TimeUnit.MILLISECONDS)) {
+                    // Try to acquire second lock
+                    if (secondLock.getLock().tryLock(LOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                         try {
+                            // Attempt withdrawal
                             if (!from.withdraw(amount)) {
                                 return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
                             }
 
+                            // Attempt deposit with rollback on failure
                             try {
                                 to.deposit(amount);
                                 return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.SUCCESS);
                             } catch (Exception e) {
-                                from.deposit(amount); // rollback
+                                // Rollback: return money to source account
+                                from.deposit(amount);
                                 return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.ROLLBACK);
                             }
 
@@ -49,19 +70,24 @@ public class TransferServiceLock {
                             secondLock.getLock().unlock();
                         }
                     } else {
+                        // Failed to acquire second lock
                         return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
                     }
                 } finally {
                     firstLock.getLock().unlock();
                 }
             } else {
+                // Failed to acquire first lock
                 return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new TransactionRecord(from.getId(), to.getId(), amount, TransactionRecord.Status.FAILED);
         } finally {
-            semaphore.release();
+            // Only release if we actually acquired the permit
+            if (acquired) {
+                semaphore.release();
+            }
         }
     }
 }

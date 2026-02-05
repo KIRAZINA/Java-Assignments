@@ -23,12 +23,11 @@ public class SimulationRunnerScheduled {
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
 
         Runnable waveTask = () -> {
-            System.out.println("\n🌊 New wave started at " + System.currentTimeMillis());
+            System.out.println("\nNew wave started at " + System.currentTimeMillis());
             CyclicBarrier barrier = new CyclicBarrier(waveSize,
-                    () -> System.out.println("🚀 Wave released!"));
+                    () -> System.out.println("Wave released!"));
 
             CountDownLatch latch = new CountDownLatch(waveSize);
-            Random random = new Random();
 
             for (int i = 0; i < waveSize; i++) {
                 executor.submit(() -> {
@@ -38,9 +37,10 @@ public class SimulationRunnerScheduled {
                         Thread.currentThread().interrupt();
                     }
 
-                    int fromIndex = random.nextInt(accounts.length);
-                    int toIndex = random.nextInt(accounts.length);
-                    long amount = 1 + random.nextInt(50);
+                    // Use ThreadLocalRandom for thread-safe random number generation
+                    int fromIndex = ThreadLocalRandom.current().nextInt(accounts.length);
+                    int toIndex = ThreadLocalRandom.current().nextInt(accounts.length);
+                    long amount = 1 + ThreadLocalRandom.current().nextInt(50);
 
                     TransferServiceLock service = new TransferServiceLock();
                     TransactionRecord record = service.transfer(accounts[fromIndex], accounts[toIndex], amount);

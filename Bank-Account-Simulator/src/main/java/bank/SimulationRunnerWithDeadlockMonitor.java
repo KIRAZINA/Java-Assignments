@@ -25,9 +25,9 @@ public class SimulationRunnerWithDeadlockMonitor {
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
 
         Runnable waveTask = () -> {
-            System.out.println("\n🌊 New wave started at " + System.currentTimeMillis());
+            System.out.println("\nNew wave started at " + System.currentTimeMillis());
             CyclicBarrier barrier = new CyclicBarrier(waveSize,
-                    () -> System.out.println("🚀 Wave released!"));
+                    () -> System.out.println("Wave released!"));
 
             CountDownLatch latch = new CountDownLatch(waveSize);
             ThreadLocal<java.util.Random> random = ThreadLocal.withInitial(java.util.Random::new);
@@ -72,9 +72,9 @@ public class SimulationRunnerWithDeadlockMonitor {
             ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
             long[] deadlockedThreads = threadMXBean.findDeadlockedThreads();
             if (deadlockedThreads != null) {
-                System.err.println("⚠️ DEADLOCK DETECTED! Threads: " + java.util.Arrays.toString(deadlockedThreads));
+                System.err.println("WARNING: DEADLOCK DETECTED! Threads: " + java.util.Arrays.toString(deadlockedThreads));
             } else {
-                System.out.println("✅ No deadlocks detected at " + System.currentTimeMillis());
+                System.out.println("OK: No deadlocks detected at " + System.currentTimeMillis());
             }
         };
 

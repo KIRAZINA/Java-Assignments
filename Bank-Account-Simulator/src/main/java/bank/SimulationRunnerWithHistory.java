@@ -46,32 +46,17 @@ public class SimulationRunnerWithHistory {
                 int toIndex = random.get().nextInt(accounts.length);
                 long amount = 1 + random.get().nextInt(50);
 
-                TransactionRecord record;
-
-                if (service instanceof TransferServiceUnsafe) {
-                    boolean success = ((TransferServiceUnsafe) service)
-                            .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                    record = new TransactionRecord(accounts[fromIndex].getId(),
-                            accounts[toIndex].getId(), amount,
-                            success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
-                } else if (service instanceof TransferServiceSynchronized) {
-                    boolean success = ((TransferServiceSynchronized) service)
-                            .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                    record = new TransactionRecord(accounts[fromIndex].getId(),
-                            accounts[toIndex].getId(), amount,
-                            success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
-                } else if (service instanceof TransferServiceLock) {
-                    record = ((TransferServiceLock) service)
-                            .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                } else {
-                    record = new TransactionRecord(accounts[fromIndex].getId(),
-                            accounts[toIndex].getId(), amount, TransactionRecord.Status.FAILED);
-                }
+                // Use TransferExecutor to eliminate code duplication
+                TransactionRecord record = TransferExecutor.executeTransfer(
+                    service,
+                    accounts[fromIndex],
+                    accounts[toIndex],
+                    amount
+                );
 
                 if (record.getStatus() != TransactionRecord.Status.SUCCESS) {
                     failedTransfers.incrementAndGet();
                 }
-
 
                 // Record transaction in history
                 history.add(record);

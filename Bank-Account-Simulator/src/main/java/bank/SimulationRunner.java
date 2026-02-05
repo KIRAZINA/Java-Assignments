@@ -53,37 +53,23 @@ public class SimulationRunner {
                                       int numTransfers, int numThreads) throws InterruptedException {
         ExecutorService executor = Executors.newFixedThreadPool(numThreads);
         CountDownLatch latch = new CountDownLatch(numTransfers);
-        Random random = new Random();
 
         try {
             for (int i = 0; i < numTransfers; i++) {
                 executor.submit(() -> {
                     try {
-                        int fromIndex = random.nextInt(accounts.length);
-                        int toIndex = random.nextInt(accounts.length);
-                        long amount = 1 + random.nextInt(50);
+                        // Use ThreadLocalRandom for thread-safe random number generation
+                        int fromIndex = ThreadLocalRandom.current().nextInt(accounts.length);
+                        int toIndex = ThreadLocalRandom.current().nextInt(accounts.length);
+                        long amount = 1 + ThreadLocalRandom.current().nextInt(50);
 
-                        TransactionRecord record;
-
-                        if (service instanceof TransferServiceUnsafe) {
-                            boolean success = ((TransferServiceUnsafe) service)
-                                    .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                            record = new TransactionRecord(accounts[fromIndex].getId(),
-                                    accounts[toIndex].getId(), amount,
-                                    success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
-                        } else if (service instanceof TransferServiceSynchronized) {
-                            boolean success = ((TransferServiceSynchronized) service)
-                                    .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                            record = new TransactionRecord(accounts[fromIndex].getId(),
-                                    accounts[toIndex].getId(), amount,
-                                    success ? TransactionRecord.Status.SUCCESS : TransactionRecord.Status.FAILED);
-                        } else if (service instanceof TransferServiceLock) {
-                            record = ((TransferServiceLock) service)
-                                    .transfer(accounts[fromIndex], accounts[toIndex], amount);
-                        } else {
-                            record = new TransactionRecord(accounts[fromIndex].getId(),
-                                    accounts[toIndex].getId(), amount, TransactionRecord.Status.FAILED);
-                        }
+                        // Use TransferExecutor to eliminate code duplication
+                        TransactionRecord record = TransferExecutor.executeTransfer(
+                            service,
+                            accounts[fromIndex],
+                            accounts[toIndex],
+                            amount
+                        );
 
                         // Optional: log or store record
                         // System.out.println(record);

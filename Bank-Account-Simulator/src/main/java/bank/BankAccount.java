@@ -34,17 +34,24 @@ public class BankAccount {
 
     /**
      * Deposit money into the account.
-     * Safe version will synchronize to ensure atomicity.
+     * Thread-safe with atomic overflow check using CAS loop.
      */
     public void deposit(long amount) {
         if (amount <= 0) {
             throw new IllegalArgumentException("Deposit amount must be positive");
         }
-        long currentBalance = balance.get();
-        if (currentBalance > Long.MAX_VALUE - amount) {
-            throw new ArithmeticException("Balance overflow detected");
-        }
-        balance.addAndGet(amount);
+        
+        // Use CAS loop to ensure atomic overflow check and update
+        long current;
+        long newBalance;
+        do {
+            current = balance.get();
+            // Check for overflow before attempting update
+            if (current > Long.MAX_VALUE - amount) {
+                throw new ArithmeticException("Balance overflow detected");
+            }
+            newBalance = current + amount;
+        } while (!balance.compareAndSet(current, newBalance));
     }
 
     /**
