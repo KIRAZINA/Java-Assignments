@@ -8,9 +8,39 @@ A thread-safe, generic In-Memory Key-Value Store implementation in Java with JSO
 - **Thread-Safety**: Uses `ConcurrentHashMap` for efficient concurrent access with atomic operations.
 - **JSON Persistence**: Save and load the store's state to/from a JSON file using Google Gson.
 - **Auto-Snapshots**: Background task to periodically save the store's state to a file.
-- **Atomic Operations**: Includes `putIfAbsent`, `computeIfAbsent` for thread-safe conditional operations.
+- **Atomic Operations**: Includes `putIfAbsent`, `computeIfAbsent`, `computeIfPresent` for thread-safe conditional operations.
+- **Optional Support**: `getOptional()` method for safe null-handling.
 - **Clean Architecture**: Follows standard Maven project structure and clean code principles.
-- **Comprehensive Testing**: Over 25 JUnit tests with Awaitility for async testing.
+- **Comprehensive Testing**: 48 JUnit tests with Awaitility for async testing.
+
+## Generics Limitations
+
+Due to Java type erasure, this store has limitations when deserializing generic types:
+
+### Simple Types (Recommended)
+For simple types, use the default constructor:
+```java
+// Works correctly out of the box
+InMemoryKeyValueStore<String, User> store = new InMemoryKeyValueStore<>();
+InMemoryKeyValueStore<String, Integer> store = new InMemoryKeyValueStore<>();
+```
+
+### Complex Generic Types
+For complex generic types (e.g., `List<User>`, `Map<String, Object>`), provide a TypeToken:
+```java
+import com.google.gson.reflect.TypeToken;
+import java.util.List;
+import java.util.Map;
+
+// For List<User> values
+TypeToken<Map<String, List<User>>> token = new TypeToken<>() {};
+InMemoryKeyValueStore<String, List<User>> store = new InMemoryKeyValueStore<>(token);
+```
+
+### Why This Matters
+Gson uses runtime type information for deserialization. Without explicit TypeToken:
+- `List<User>` may deserialize as `List<LinkedTreeMap>` instead of `List<User>`
+- Nested generics will lose their type information
 
 ## Supported Types
 
@@ -21,7 +51,7 @@ This store uses Gson for serialization. Keys and values should be types that Gso
 - **POJOs**: Classes with a no-arg constructor and standard getters/setters
 - **Arrays and Collections**: Of the above types
 
-> ⚠️ **Note**: Avoid using complex generic types as keys or values due to type erasure during serialization.
+> ⚠️ **Note**: For complex generic types, always use the TypeToken constructor.
 
 ## Getting Started
 
@@ -173,6 +203,7 @@ store.put("d", 4);
 |--------|-------------|
 | `put(K key, V value)` | Associates the specified value with the specified key |
 | `get(K key)` | Returns the value for the specified key, or null |
+| `getOptional(K key)` | Returns an Optional containing the value, or empty Optional |
 | `getOrDefault(K key, V defaultValue)` | Returns the value or defaultValue if not found |
 | `remove(K key)` | Removes the mapping for the specified key |
 | `containsKey(K key)` | Returns true if the store contains the specified key |
@@ -187,6 +218,7 @@ store.put("d", 4);
 |--------|-------------|
 | `putIfAbsent(K key, V value)` | Associates value with key only if not already present |
 | `computeIfAbsent(K key, Function mapper)` | Computes value if key is absent |
+| `computeIfPresent(K key, BiFunction mapper)` | Computes new value if key is present; can remove entry by returning null |
 
 ### Persistence Operations
 

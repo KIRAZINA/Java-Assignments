@@ -12,6 +12,8 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -530,5 +532,105 @@ public class InMemoryKeyValueStoreTest {
         // The previously returned set should not change
         assertEquals(2, keys.size());
         assertFalse(keys.contains("key3"));
+    }
+
+    // ==================== Production-Grade Tests ====================
+
+    @Test
+    void testGetOptional() {
+        store.put("key1", 100);
+
+        assertTrue(store.getOptional("key1").isPresent());
+        assertEquals(100, store.getOptional("key1").get());
+
+        assertFalse(store.getOptional("nonexistent").isPresent());
+    }
+
+    @Test
+    void testComputeIfPresent() {
+        store.put("key1", 100);
+
+        // Update existing value
+        Integer result = store.computeIfPresent("key1", (k, v) -> v * 2);
+        assertEquals(200, result);
+        assertEquals(200, store.get("key1"));
+
+        // Non-existent key - function should not be called
+        result = store.computeIfPresent("nonexistent", (k, v) -> v * 2);
+        assertNull(result);
+        assertFalse(store.containsKey("nonexistent"));
+
+        // Return null removes the entry
+        result = store.computeIfPresent("key1", (k, v) -> null);
+        assertNull(result);
+        assertFalse(store.containsKey("key1"));
+    }
+
+    @Test
+    void testGetOrDefaultRejectsNull() {
+        store.put("key1", 100);
+        assertThrows(IllegalArgumentException.class, () -> store.getOrDefault("key1", null));
+    }
+
+    @Test
+    void testLoadFromFileRejectsNullValues() throws IOException {
+        String filePath = tempDir.resolve("null_values.json").toString();
+        try (FileWriter writer = new FileWriter(filePath)) {
+            writer.write("{\"key1\": null, \"key2\": 100}");
+        }
+
+        assertThrows(StorePersistenceException.class, () -> store.loadFromFile(filePath));
+    }
+
+    @Test
+    void testComputeIfPresentConcurrent() throws InterruptedException {
+        int threadCount = 10;
+        store.put("counter", 0);
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch endLatch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    store.computeIfPresent("counter", (k, v) -> v + 1);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    endLatch.countDown();
+                }
+            });
+        }
+
+        startLatch.countDown();
+        assertTrue(endLatch.await(5, TimeUnit.SECONDS));
+
+        // All increments should be applied atomically
+        assertEquals(threadCount, store.get("counter"));
+        executor.shutdown();
+    }
+
+    @Test
+    void testTypeTokenConstructor() {
+        // Test that TypeToken constructor works for simple types
+        com.google.gson.reflect.TypeToken<Map<String, String>> typeToken = 
+            new com.google.gson.reflect.TypeToken<>() {};
+        InMemoryKeyValueStore<String, String> typedStore = 
+            new InMemoryKeyValueStore<>(typeToken);
+        
+        typedStore.put("key1", "value1");
+        assertEquals("value1", typedStore.get("key1"));
+    }
+
+    @Test
+    void testKeySetIsUnmodifiable() {
+        store.put("key1", 1);
+        Set<String> keys = store.keySet();
+
+        // Should throw UnsupportedOperationException for any modification attempt
+        assertThrows(UnsupportedOperationException.class, () -> keys.add("key2"));
+        assertThrows(UnsupportedOperationException.class, () -> keys.remove("key1"));
+        assertThrows(UnsupportedOperationException.class, () -> keys.clear());
     }
 }
