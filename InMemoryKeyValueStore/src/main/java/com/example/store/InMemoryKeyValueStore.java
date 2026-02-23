@@ -7,7 +7,7 @@ import com.google.gson.reflect.TypeToken;
 
 import java.io.*;
 import java.lang.reflect.Type;
-import java.util.Collections;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -17,10 +17,20 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * A thread-safe in-memory key-value store that supports basic CRUD operations,
- * JSON persistence, and automatic snapshots.
+ * JSON persistence, automatic snapshots, and Time-to-Live (TTL) for keys.
+ *
+ * <h2>TTL (Time-to-Live) Support</h2>
+ * <p>Keys can have an optional expiration time. Expired entries are automatically
+ * removed during read operations and by a background cleaner thread.
+ * <ul>
+ *   <li>Use {@link #put(K, V, long)} to set a TTL in seconds</li>
+ *   <li>Use {@link #get(K)} - returns null for expired entries</li>
+ *   <li>Use {@link #getRemainingTTL(K)} to check time until expiration</li>
+ * </ul>
  *
  * <h2>Generics Limitations</h2>
  * <p>Due to Java type erasure, this store has limitations when deserializing generic types.
@@ -31,78 +41,153 @@ import java.util.function.Function;
  *   <li>For complex generic types (List<T>, Map<K,V>): Requires explicit TypeToken in constructor</li>
  * </ul>
  *
- * <h2>Recommended Usage</h2>
- * <p>For most use cases, use simple key types (String recommended) and POJO values:
- * <pre>{@code
- * // Simple usage with String keys and POJO values
- * InMemoryKeyValueStore<String, User> store = new InMemoryKeyValueStore<>();
- *
- * // For complex generic types, provide TypeToken
- * TypeToken<Map<String, List<User>>> typeToken = new TypeToken<>() {};
- * InMemoryKeyValueStore<String, List<User>> store = new InMemoryKeyValueStore<>(typeToken);
- * }</pre>
- *
- * <h2>Null Handling</h2>
- * <p>Neither keys nor values can be null. This is a limitation of {@link ConcurrentHashMap}
- * which is used internally for thread-safety.
- *
  * <h2>Thread Safety</h2>
  * <p>All methods are thread-safe. Read operations are non-blocking.
  * Write operations use ConcurrentHashMap's internal locking.
- * Atomic operations ({@link #putIfAbsent}, {@link #computeIfAbsent}, {@link #computeIfPresent})
- * provide atomicity for compound operations.
+ * TTL operations are atomic with respect to get/put operations.
  *
  * @param <K> the type of keys maintained by this store
  * @param <V> the type of mapped values
  * @author Java Assignments Team
- * @version 2.1
+ * @version 3.0
  */
 public class InMemoryKeyValueStore<K, V> {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-
-    private final ConcurrentHashMap<K, V> store;
-    private final Type typeToken;
-    private volatile ScheduledExecutorService snapshotExecutor;
-    private final Object snapshotLock = new Object();
+    private static final long NO_TTL = -1L;
+    private static final long DEFAULT_CLEANER_INTERVAL_SECONDS = 60L;
 
     /**
-     * Constructs an empty in-memory store with default type handling.
+     * Internal entry wrapper that stores value and expiration timestamp.
      *
-     * <p>This constructor is suitable for simple types (String, Integer, POJOs).
-     * For complex generic types, use {@link #InMemoryKeyValueStore(TypeToken)}.
+     * @param <T> the type of the value
+     */
+    public record Entry<T>(T value, Long expiresAtEpochMillis) {
+        
+        /**
+         * Checks if this entry has expired.
+         *
+         * @return true if the entry has expired, false otherwise
+         */
+        public boolean isExpired() {
+            return expiresAtEpochMillis != null && 
+                   System.currentTimeMillis() > expiresAtEpochMillis;
+        }
+
+        /**
+         * Checks if this entry has a TTL set.
+         *
+         * @return true if TTL is set, false otherwise
+         */
+        public boolean hasTTL() {
+            return expiresAtEpochMillis != null;
+        }
+
+        /**
+         * Returns the remaining TTL in seconds.
+         *
+         * @return remaining seconds, or -1 if no TTL or already expired
+         */
+        public long getRemainingTTLSeconds() {
+            if (expiresAtEpochMillis == null) {
+                return -1;
+            }
+            long remaining = expiresAtEpochMillis - System.currentTimeMillis();
+            return remaining > 0 ? TimeUnit.MILLISECONDS.toSeconds(remaining) : -1;
+        }
+    }
+
+    private final ConcurrentHashMap<K, Entry<V>> store;
+    private final Type typeToken;
+    private volatile ScheduledExecutorService snapshotExecutor;
+    private volatile ScheduledExecutorService cleanerExecutor;
+    private final Object snapshotLock = new Object();
+    private final Object cleanerLock = new Object();
+    private volatile long defaultTTLSeconds = NO_TTL;
+    private volatile long cleanerIntervalSeconds;
+
+    /**
+     * Constructs an empty in-memory store with default type handling and
+     * default cleaner interval (60 seconds).
      */
     public InMemoryKeyValueStore() {
+        this(DEFAULT_CLEANER_INTERVAL_SECONDS);
+    }
+
+    /**
+     * Constructs an empty in-memory store with specified cleaner interval.
+     *
+     * @param cleanerIntervalSeconds interval for background expired entries cleanup
+     */
+    public InMemoryKeyValueStore(long cleanerIntervalSeconds) {
         this.store = new ConcurrentHashMap<>();
-        this.typeToken = new TypeToken<Map<K, V>>() {}.getType();
+        this.typeToken = new TypeToken<Map<K, Entry<V>>>() {}.getType();
+        this.cleanerIntervalSeconds = cleanerIntervalSeconds;
     }
 
     /**
      * Constructs an empty in-memory store with explicit type token for proper
      * deserialization of complex generic types.
      *
-     * <p>Use this constructor when your value type contains generics:
-     * <pre>{@code
-     * TypeToken<Map<String, List<User>>> token = new TypeToken<>() {};
-     * InMemoryKeyValueStore<String, List<User>> store = new InMemoryKeyValueStore<>(token);
-     * }</pre>
-     *
      * @param typeToken the TypeToken describing the map type for JSON deserialization
      */
     @SuppressWarnings("unchecked")
-    public InMemoryKeyValueStore(TypeToken<? extends Map<K, V>> typeToken) {
+    public InMemoryKeyValueStore(TypeToken<? extends Map<K, Entry<V>>> typeToken) {
         this.store = new ConcurrentHashMap<>();
         this.typeToken = typeToken.getType();
+        this.cleanerIntervalSeconds = DEFAULT_CLEANER_INTERVAL_SECONDS;
+    }
+
+    /**
+     * Constructs an empty in-memory store with explicit type token and cleaner interval.
+     *
+     * @param typeToken the TypeToken describing the map type for JSON deserialization
+     * @param cleanerIntervalSeconds interval for background expired entries cleanup
+     */
+    @SuppressWarnings("unchecked")
+    public InMemoryKeyValueStore(TypeToken<? extends Map<K, Entry<V>>> typeToken, long cleanerIntervalSeconds) {
+        this.store = new ConcurrentHashMap<>();
+        this.typeToken = typeToken.getType();
+        this.cleanerIntervalSeconds = cleanerIntervalSeconds;
+    }
+
+    // ==================== TTL Configuration ====================
+
+    /**
+     * Sets a default TTL for all future put operations that don't specify an explicit TTL.
+     *
+     * @param ttlSeconds default TTL in seconds, or -1 to disable default TTL
+     */
+    public void setDefaultTTL(long ttlSeconds) {
+        this.defaultTTLSeconds = ttlSeconds > 0 ? ttlSeconds : NO_TTL;
+    }
+
+    /**
+     * Returns the current default TTL setting.
+     *
+     * @return default TTL in seconds, or -1 if not set
+     */
+    public long getDefaultTTL() {
+        return defaultTTLSeconds;
+    }
+
+    /**
+     * Sets the interval for the background cleaner thread.
+     * Changes take effect after restarting the cleaner.
+     *
+     * @param intervalSeconds cleaner interval in seconds
+     */
+    public void setCleanerInterval(long intervalSeconds) {
+        if (intervalSeconds > 0) {
+            this.cleanerIntervalSeconds = intervalSeconds;
+        }
     }
 
     // ==================== Basic CRUD Operations ====================
 
     /**
-     * Maps the specified key to the specified value in this store.
-     * If the store previously contained a mapping for the key, the old value is replaced.
-     *
-     * <p><b>Thread Safety:</b> This operation is thread-safe and uses
-     * {@link ConcurrentHashMap#put(Object, Object)} internally.
+     * Maps the specified key to the specified value without TTL.
+     * Uses default TTL if set via {@link #setDefaultTTL(long)}.
      *
      * @param key   key with which the specified value is to be associated (must not be null)
      * @param value value to be associated with the specified key (must not be null)
@@ -110,88 +195,138 @@ public class InMemoryKeyValueStore<K, V> {
      * @throws IllegalArgumentException if the specified key or value is null
      */
     public V put(K key, V value) {
+        return put(key, value, defaultTTLSeconds);
+    }
+
+    /**
+     * Maps the specified key to the specified value with a TTL.
+     *
+     * @param key        key with which the specified value is to be associated (must not be null)
+     * @param value      value to be associated with the specified key (must not be null)
+     * @param ttlSeconds time-to-live in seconds; use -1 for no expiration
+     * @return the previous value associated with the key, or null if there was no mapping
+     * @throws IllegalArgumentException if the specified key or value is null
+     */
+    public V put(K key, V value, long ttlSeconds) {
         validateNotNull(key, "Key");
         validateNotNull(value, "Value");
-        return store.put(key, value);
+
+        Long expiresAt = ttlSeconds > 0 
+            ? System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ttlSeconds) 
+            : null;
+
+        Entry<V> entry = new Entry<>(value, expiresAt);
+        Entry<V> previous = store.put(key, entry);
+        return previous != null && !previous.isExpired() ? previous.value() : null;
     }
 
     /**
      * Returns the value to which the specified key is mapped,
-     * or null if this store contains no mapping for the key.
+     * or null if this store contains no mapping for the key or the entry has expired.
      *
-     * <p><b>Thread Safety:</b> This operation is non-blocking and thread-safe.
+     * <p>If the entry has expired, it is removed from the store.
      *
      * @param key the key whose associated value is to be returned
-     * @return the value to which the specified key is mapped, or null if no mapping exists
+     * @return the value to which the specified key is mapped, or null if no mapping exists or expired
      */
     public V get(K key) {
-        return store.get(key);
+        Entry<V> entry = store.get(key);
+        if (entry == null) {
+            return null;
+        }
+        if (entry.isExpired()) {
+            store.remove(key, entry); // Atomic removal if not changed
+            return null;
+        }
+        return entry.value();
     }
 
     /**
      * Returns an {@link Optional} containing the value to which the specified key is mapped,
-     * or an empty Optional if this store contains no mapping for the key.
-     *
-     * <p>This method is preferred over {@link #get(Object)} when you need to distinguish
-     * between "key not found" and "value is null" (though null values are not allowed in this store).
-     *
-     * <p><b>Thread Safety:</b> This operation is non-blocking and thread-safe.
+     * or an empty Optional if this store contains no mapping for the key or the entry has expired.
      *
      * @param key the key whose associated value is to be returned
-     * @return an Optional containing the mapped value, or empty Optional if no mapping exists
+     * @return an Optional containing the mapped value, or empty Optional if no mapping exists or expired
      */
     public Optional<V> getOptional(K key) {
-        return Optional.ofNullable(store.get(key));
+        return Optional.ofNullable(get(key));
     }
 
     /**
      * Returns the value to which the specified key is mapped,
-     * or the specified defaultValue if this store contains no mapping for the key.
-     *
-     * <p><b>Thread Safety:</b> This operation is non-blocking and thread-safe.
+     * or the specified defaultValue if this store contains no mapping for the key or the entry has expired.
      *
      * @param key          the key whose associated value is to be returned
      * @param defaultValue the value to return if no mapping exists for the key (must not be null)
-     * @return the value to which the specified key is mapped, or defaultValue if no mapping exists
+     * @return the value to which the specified key is mapped, or defaultValue if no mapping exists or expired
      * @throws IllegalArgumentException if defaultValue is null
      */
     public V getOrDefault(K key, V defaultValue) {
         validateNotNull(defaultValue, "DefaultValue");
-        return store.getOrDefault(key, defaultValue);
+        V value = get(key);
+        return value != null ? value : defaultValue;
+    }
+
+    /**
+     * Returns the remaining TTL for the specified key.
+     *
+     * @param key the key to check
+     * @return remaining TTL in seconds, or -1 if no TTL set, key doesn't exist, or entry has expired
+     */
+    public long getRemainingTTL(K key) {
+        Entry<V> entry = store.get(key);
+        if (entry == null || entry.isExpired()) {
+            return -1;
+        }
+        return entry.getRemainingTTLSeconds();
+    }
+
+    /**
+     * Checks if the specified key has a TTL set.
+     *
+     * @param key the key to check
+     * @return true if the key exists and has a TTL, false otherwise
+     */
+    public boolean hasTTL(K key) {
+        Entry<V> entry = store.get(key);
+        return entry != null && !entry.isExpired() && entry.hasTTL();
     }
 
     /**
      * Removes the mapping for a key from this store if it is present.
      *
-     * <p><b>Thread Safety:</b> This operation is atomic and thread-safe.
-     *
      * @param key key whose mapping is to be removed from the store
-     * @return true if the store contained a mapping for the key, false otherwise
+     * @return true if the store contained a mapping for the key (and it wasn't expired), false otherwise
      */
     public boolean remove(K key) {
-        return store.remove(key) != null;
+        Entry<V> entry = store.remove(key);
+        return entry != null && !entry.isExpired();
     }
 
     /**
-     * Returns true if this store contains a mapping for the specified key.
-     *
-     * <p><b>Thread Safety:</b> This operation is non-blocking and thread-safe.
+     * Returns true if this store contains a mapping for the specified key
+     * and the entry has not expired.
      *
      * @param key key whose presence in this store is to be tested
-     * @return true if this store contains a mapping for the specified key
+     * @return true if this store contains a non-expired mapping for the specified key
      */
     public boolean containsKey(K key) {
-        return store.containsKey(key);
+        Entry<V> entry = store.get(key);
+        if (entry == null) {
+            return false;
+        }
+        if (entry.isExpired()) {
+            store.remove(key, entry);
+            return false;
+        }
+        return true;
     }
 
     // ==================== Atomic Operations ====================
 
     /**
-     * If the specified key is not already associated with a value,
-     * associates it with the given value.
-     *
-     * <p><b>Thread Safety:</b> This operation is atomic. If multiple threads attempt
-     * to putIfAbsent for the same key concurrently, only one will succeed.
+     * If the specified key is not already associated with a value (or is expired),
+     * associates it with the given value using default TTL.
      *
      * @param key   key with which the specified value is to be associated (must not be null)
      * @param value value to be associated with the specified key (must not be null)
@@ -199,21 +334,53 @@ public class InMemoryKeyValueStore<K, V> {
      * @throws IllegalArgumentException if the specified key or value is null
      */
     public V putIfAbsent(K key, V value) {
+        return putIfAbsent(key, value, defaultTTLSeconds);
+    }
+
+    /**
+     * If the specified key is not already associated with a value (or is expired),
+     * associates it with the given value with specified TTL.
+     *
+     * @param key        key with which the specified value is to be associated (must not be null)
+     * @param value      value to be associated with the specified key (must not be null)
+     * @param ttlSeconds time-to-live in seconds; use -1 for no expiration
+     * @return the previous value associated with the key, or null if there was no mapping
+     * @throws IllegalArgumentException if the specified key or value is null
+     */
+    public V putIfAbsent(K key, V value, long ttlSeconds) {
         validateNotNull(key, "Key");
         validateNotNull(value, "Value");
-        return store.putIfAbsent(key, value);
+
+        Long expiresAt = ttlSeconds > 0 
+            ? System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ttlSeconds) 
+            : null;
+
+        Entry<V> newEntry = new Entry<>(value, expiresAt);
+        
+        while (true) {
+            Entry<V> existing = store.get(key);
+            if (existing == null || existing.isExpired()) {
+                Entry<V> prev = store.putIfAbsent(key, newEntry);
+                if (prev == null) {
+                    return null;
+                }
+                // Another thread inserted, check if expired
+                if (prev.isExpired()) {
+                    if (store.replace(key, prev, newEntry)) {
+                        return null;
+                    }
+                    // Retry
+                    continue;
+                }
+                return prev.value();
+            }
+            return existing.value();
+        }
     }
 
     /**
      * If the specified key is not already associated with a value,
-     * attempts to compute its value using the given mapping function
-     * and enters it into this map.
-     *
-     * <p><b>Thread Safety:</b> This operation is atomic. The mapping function
-     * is executed at most once per key, even under high concurrency.
-     *
-     * <p><b>Note:</b> The mapping function must not attempt to modify this map
-     * and should return a non-null value.
+     * attempts to compute its value using the given mapping function.
      *
      * @param key             key with which the computed value is to be associated (must not be null)
      * @param mappingFunction the function to compute a value (must not return null)
@@ -222,102 +389,191 @@ public class InMemoryKeyValueStore<K, V> {
      * @throws NullPointerException     if the mappingFunction is null or returns null
      */
     public V computeIfAbsent(K key, Function<? super K, ? extends V> mappingFunction) {
+        return computeIfAbsent(key, mappingFunction, defaultTTLSeconds);
+    }
+
+    /**
+     * If the specified key is not already associated with a value,
+     * attempts to compute its value using the given mapping function with specified TTL.
+     *
+     * @param key             key with which the computed value is to be associated (must not be null)
+     * @param mappingFunction the function to compute a value (must not return null)
+     * @param ttlSeconds      time-to-live in seconds; use -1 for no expiration
+     * @return the current (existing or computed) value associated with the specified key
+     */
+    public V computeIfAbsent(K key, Function<? super K, ? extends V> mappingFunction, long ttlSeconds) {
         validateNotNull(key, "Key");
         if (mappingFunction == null) {
             throw new NullPointerException("Mapping function cannot be null.");
         }
-        return store.computeIfAbsent(key, mappingFunction);
+
+        while (true) {
+            Entry<V> existing = store.get(key);
+            if (existing != null && !existing.isExpired()) {
+                return existing.value();
+            }
+
+            V newValue = mappingFunction.apply(key);
+            validateNotNull(newValue, "Computed value");
+
+            Long expiresAt = ttlSeconds > 0 
+                ? System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(ttlSeconds) 
+                : null;
+
+            Entry<V> newEntry = new Entry<>(newValue, expiresAt);
+
+            if (existing == null) {
+                Entry<V> prev = store.putIfAbsent(key, newEntry);
+                if (prev == null) {
+                    return newValue;
+                }
+                if (prev.isExpired()) {
+                    if (store.replace(key, prev, newEntry)) {
+                        return newValue;
+                    }
+                    continue;
+                }
+                return prev.value();
+            } else {
+                if (store.replace(key, existing, newEntry)) {
+                    return newValue;
+                }
+                // Retry
+            }
+        }
     }
 
     /**
-     * If the value for the specified key is present, attempts to compute a new mapping
-     * given the key and its current mapped value.
-     *
-     * <p><b>Thread Safety:</b> This operation is atomic. The remapping function
-     * is executed atomically with respect to other operations on the same key.
-     *
-     * <p><b>Note:</b> The remapping function must not attempt to modify this map.
-     * If the remapping function returns null, the mapping is removed.
+     * If the value for the specified key is present and not expired,
+     * attempts to compute a new mapping given the key and its current mapped value.
      *
      * @param key               key with which the specified value is to be associated (must not be null)
      * @param remappingFunction the function to compute a value
      * @return the new value associated with the specified key, or null if none
-     * @throws IllegalArgumentException if the specified key is null
-     * @throws NullPointerException     if the remappingFunction is null
      */
     public V computeIfPresent(K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
         validateNotNull(key, "Key");
         if (remappingFunction == null) {
             throw new NullPointerException("Remapping function cannot be null.");
         }
-        return store.computeIfPresent(key, remappingFunction);
+
+        while (true) {
+            Entry<V> existing = store.get(key);
+            if (existing == null || existing.isExpired()) {
+                if (existing != null) {
+                    store.remove(key, existing);
+                }
+                return null;
+            }
+
+            V newValue = remappingFunction.apply(key, existing.value());
+            
+            if (newValue == null) {
+                if (store.remove(key, existing)) {
+                    return null;
+                }
+                continue;
+            }
+
+            validateNotNull(newValue, "Remapped value");
+            Entry<V> newEntry = new Entry<>(newValue, existing.expiresAtEpochMillis());
+            
+            if (store.replace(key, existing, newEntry)) {
+                return newValue;
+            }
+            // Retry
+        }
     }
 
     /**
      * Returns an unmodifiable snapshot of the keys contained in this store.
-     *
-     * <p>The returned set is a copy and will not reflect subsequent changes to the store.
-     * This method uses {@link Set#copyOf} for immutability.
-     *
-     * <p><b>Thread Safety:</b> This operation creates a consistent snapshot
-     * but is not atomic with respect to other operations.
+     * Expired entries are excluded.
      *
      * @return an unmodifiable set of the keys contained in this store
      */
     public Set<K> keySet() {
+        removeExpired();
         return Set.copyOf(store.keySet());
     }
 
     // ==================== Store Management ====================
 
     /**
-     * Returns the number of key-value mappings in this store.
+     * Returns the number of non-expired key-value mappings in this store.
      *
-     * <p><b>Thread Safety:</b> This operation is non-blocking but the returned value
-     * may be stale if concurrent modifications are in progress.
-     *
-     * @return the number of key-value mappings in this store
+     * @return the number of non-expired key-value mappings in this store
      */
     public int size() {
-        return store.size();
+        return (int) store.entrySet().stream()
+            .filter(e -> !e.getValue().isExpired())
+            .count();
     }
 
     /**
-     * Returns true if this store contains no key-value mappings.
+     * Returns true if this store contains no non-expired key-value mappings.
      *
-     * <p><b>Thread Safety:</b> This operation is non-blocking but the returned value
-     * may be stale if concurrent modifications are in progress.
-     *
-     * @return true if this store contains no key-value mappings
+     * @return true if this store contains no non-expired key-value mappings
      */
     public boolean isEmpty() {
-        return store.isEmpty();
+        return size() == 0;
     }
 
     /**
      * Removes all of the mappings from this store.
-     *
-     * <p><b>Thread Safety:</b> This operation is thread-safe but not atomic
-     * with respect to other operations.
      */
     public void clear() {
         store.clear();
+    }
+
+    /**
+     * Manually removes all expired entries from the store.
+     * This is useful for testing or when immediate cleanup is needed.
+     *
+     * @return the number of entries removed
+     */
+    public int removeExpired() {
+        int removed = 0;
+        for (Map.Entry<K, Entry<V>> entry : store.entrySet()) {
+            if (entry.getValue().isExpired()) {
+                if (store.remove(entry.getKey(), entry.getValue())) {
+                    removed++;
+                }
+            }
+        }
+        return removed;
     }
 
     // ==================== Persistence Operations ====================
 
     /**
      * Serializes the entire store to a file at the given path in JSON format.
-     *
-     * <p><b>Thread Safety:</b> This operation creates a consistent snapshot
-     * but concurrent modifications during save may or may not be included.
+     * Expired entries are excluded from serialization.
      *
      * @param filePath path to the file where the store will be saved
      * @throws StorePersistenceException if an IO error occurs during saving
      */
     public void saveToFile(String filePath) throws StorePersistenceException {
+        saveToFile(filePath, true);
+    }
+
+    /**
+     * Serializes the entire store to a file at the given path in JSON format.
+     *
+     * @param filePath           path to the file where the store will be saved
+     * @param excludeExpired     if true, expired entries are not saved
+     * @throws StorePersistenceException if an IO error occurs during saving
+     */
+    public void saveToFile(String filePath, boolean excludeExpired) throws StorePersistenceException {
         try (Writer writer = new FileWriter(filePath)) {
-            GSON.toJson(store, writer);
+            Map<K, Entry<V>> toSave;
+            if (excludeExpired) {
+                toSave = store.entrySet().stream()
+                    .filter(e -> !e.getValue().isExpired())
+                    .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+            } else {
+                toSave = store;
+            }
+            GSON.toJson(toSave, writer);
         } catch (IOException e) {
             throw new StorePersistenceException("Failed to save store to file: " + filePath, e);
         }
@@ -327,14 +583,8 @@ public class InMemoryKeyValueStore<K, V> {
      * Deserializes the store from the file at the given path and loads it into memory.
      * Overwrites existing data in memory.
      *
-     * <p>If the file does not exist, this method does nothing and returns silently.
-     *
-     * <p><b>Thread Safety:</b> This operation clears and repopulates the store.
-     * Concurrent reads during this operation may see inconsistent data.
-     *
      * @param filePath path to the file from which the store will be loaded
-     * @throws StorePersistenceException if an error occurs during loading,
-     *         the file contains invalid JSON, or contains null keys/values
+     * @throws StorePersistenceException if an error occurs during loading
      */
     public void loadFromFile(String filePath) throws StorePersistenceException {
         loadFromFile(filePath, false);
@@ -343,16 +593,9 @@ public class InMemoryKeyValueStore<K, V> {
     /**
      * Deserializes the store from the file at the given path and loads it into memory.
      *
-     * <p>If the file does not exist, this method does nothing and returns silently.
-     *
-     * <p><b>Thread Safety:</b> This operation modifies the store.
-     * Concurrent reads during this operation may see inconsistent data.
-     *
      * @param filePath path to the file from which the store will be loaded
-     * @param merge    if true, existing data is preserved and new data is merged;
-     *                 if false, existing data is cleared before loading
-     * @throws StorePersistenceException if an error occurs during loading,
-     *         the file contains invalid JSON, or contains null keys/values
+     * @param merge    if true, existing data is preserved and new data is merged
+     * @throws StorePersistenceException if an error occurs during loading
      */
     @SuppressWarnings("unchecked")
     public void loadFromFile(String filePath, boolean merge) throws StorePersistenceException {
@@ -362,16 +605,15 @@ public class InMemoryKeyValueStore<K, V> {
         }
 
         try (Reader reader = new FileReader(filePath)) {
-            Map<K, V> loadedData = GSON.fromJson(reader, typeToken);
+            Map<K, Entry<V>> loadedData = GSON.fromJson(reader, typeToken);
 
             if (loadedData != null) {
-                // Validate no null keys or values
-                for (Map.Entry<K, V> entry : loadedData.entrySet()) {
+                for (Map.Entry<K, Entry<V>> entry : loadedData.entrySet()) {
                     if (entry.getKey() == null) {
                         throw new StorePersistenceException(
                             "Loaded data contains null keys, which are not allowed in this store.");
                     }
-                    if (entry.getValue() == null) {
+                    if (entry.getValue() == null || entry.getValue().value() == null) {
                         throw new StorePersistenceException(
                             "Loaded data contains null values for key '" + entry.getKey() +
                             "', which are not allowed in this store.");
@@ -381,7 +623,10 @@ public class InMemoryKeyValueStore<K, V> {
                 if (!merge) {
                     store.clear();
                 }
-                store.putAll(loadedData);
+                // Filter out already-expired entries during load
+                loadedData.entrySet().stream()
+                    .filter(e -> !e.getValue().isExpired())
+                    .forEach(e -> store.put(e.getKey(), e.getValue()));
             }
         } catch (JsonSyntaxException e) {
             throw new StorePersistenceException(
@@ -396,15 +641,6 @@ public class InMemoryKeyValueStore<K, V> {
     /**
      * Starts a background thread to save the store to the specified file at regular intervals.
      *
-     * <p>If auto-snapshot is already running, it will be stopped before starting a new one,
-     * ensuring only one snapshot executor is active at a time.
-     *
-     * <p>The snapshot thread is created as a daemon thread, so it will not prevent
-     * the JVM from shutting down.
-     *
-     * <p><b>Thread Safety:</b> This method is synchronized to ensure only one
-     * snapshot executor runs at a time.
-     *
      * @param filePath         path where the snapshot will be saved
      * @param intervalSeconds interval between snapshots in seconds (must be positive)
      * @throws IllegalArgumentException if intervalSeconds is not positive
@@ -415,7 +651,6 @@ public class InMemoryKeyValueStore<K, V> {
         }
 
         synchronized (snapshotLock) {
-            // Always stop any existing executor before starting a new one
             stopAutoSnapshot();
 
             snapshotExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -436,12 +671,6 @@ public class InMemoryKeyValueStore<K, V> {
 
     /**
      * Stops the background snapshot thread if it is running.
-     *
-     * <p>This method waits up to 5 seconds for the executor to terminate gracefully.
-     * If it doesn't terminate in time, it will be forcefully shut down.
-     *
-     * <p><b>Thread Safety:</b> This method is safe to call from any thread
-     * and can be called multiple times.
      */
     public void stopAutoSnapshot() {
         synchronized (snapshotLock) {
@@ -471,15 +700,71 @@ public class InMemoryKeyValueStore<K, V> {
         }
     }
 
-    // ==================== Private Helper Methods ====================
+    // ==================== Background Cleaner ====================
 
     /**
-     * Validates that the given value is not null.
-     *
-     * @param value the value to check
-     * @param name  the name of the parameter for the error message
-     * @throws IllegalArgumentException if value is null
+     * Starts the background cleaner thread that periodically removes expired entries.
      */
+    public void startCleaner() {
+        synchronized (cleanerLock) {
+            stopCleaner();
+
+            cleanerExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "StoreCleanerThread");
+                t.setDaemon(true);
+                return t;
+            });
+
+            cleanerExecutor.scheduleAtFixedRate(
+                this::removeExpired,
+                cleanerIntervalSeconds,
+                cleanerIntervalSeconds,
+                TimeUnit.SECONDS
+            );
+        }
+    }
+
+    /**
+     * Stops the background cleaner thread if it is running.
+     */
+    public void stopCleaner() {
+        synchronized (cleanerLock) {
+            if (cleanerExecutor != null && !cleanerExecutor.isShutdown()) {
+                cleanerExecutor.shutdown();
+                try {
+                    if (!cleanerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                        cleanerExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    cleanerExecutor.shutdownNow();
+                    Thread.currentThread().interrupt();
+                }
+                cleanerExecutor = null;
+            }
+        }
+    }
+
+    /**
+     * Checks if the background cleaner is currently running.
+     *
+     * @return true if cleaner is active, false otherwise
+     */
+    public boolean isCleanerRunning() {
+        synchronized (cleanerLock) {
+            return cleanerExecutor != null && !cleanerExecutor.isShutdown();
+        }
+    }
+
+    /**
+     * Stops all background threads (snapshot and cleaner).
+     */
+    public void shutdown() {
+        stopAutoSnapshot();
+        stopCleaner();
+    }
+
+    // ==================== Private Helper Methods ====================
+
     private void validateNotNull(Object value, String name) {
         if (value == null) {
             throw new IllegalArgumentException(name + " cannot be null.");

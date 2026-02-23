@@ -1,6 +1,6 @@
 # In-Memory Key-Value Store
 
-A thread-safe, generic In-Memory Key-Value Store implementation in Java with JSON persistence and automatic snapshots.
+A thread-safe, generic In-Memory Key-Value Store implementation in Java with JSON persistence, automatic snapshots, and Time-to-Live (TTL) support.
 
 ## Features
 
@@ -8,10 +8,47 @@ A thread-safe, generic In-Memory Key-Value Store implementation in Java with JSO
 - **Thread-Safety**: Uses `ConcurrentHashMap` for efficient concurrent access with atomic operations.
 - **JSON Persistence**: Save and load the store's state to/from a JSON file using Google Gson.
 - **Auto-Snapshots**: Background task to periodically save the store's state to a file.
+- **TTL (Time-to-Live)**: Automatic expiration of entries with background cleaner thread.
 - **Atomic Operations**: Includes `putIfAbsent`, `computeIfAbsent`, `computeIfPresent` for thread-safe conditional operations.
 - **Optional Support**: `getOptional()` method for safe null-handling.
 - **Clean Architecture**: Follows standard Maven project structure and clean code principles.
-- **Comprehensive Testing**: 48 JUnit tests with Awaitility for async testing.
+- **Comprehensive Testing**: 63 JUnit tests with Awaitility for async testing.
+
+## TTL (Time-to-Live) Support
+
+Keys can have an optional expiration time, making this store suitable for caching scenarios:
+
+```java
+InMemoryKeyValueStore<String, User> store = new InMemoryKeyValueStore<>();
+
+// Put with 1 hour TTL
+store.put("session:abc123", user, 3600);
+
+// Check remaining TTL
+long remaining = store.getRemainingTTL("session:abc123");
+
+// Check if key has TTL
+if (store.hasTTL("session:abc123")) {
+    // Key will expire automatically
+}
+
+// Set default TTL for all future puts
+store.setDefaultTTL(300); // 5 minutes
+store.put("temp:data", data); // Uses default TTL
+
+// Start background cleaner (removes expired entries periodically)
+store.startCleaner();
+
+// Manual cleanup
+int removed = store.removeExpired();
+```
+
+### TTL Behavior
+
+- **Automatic Expiration**: Expired entries return `null` on `get()` and are automatically removed
+- **Background Cleaner**: Optional thread that periodically removes expired entries
+- **Persistence Integration**: Expired entries are excluded from `saveToFile()` by default
+- **Atomic Operations**: TTL-aware `putIfAbsent` and `computeIfAbsent`
 
 ## Generics Limitations
 
@@ -217,8 +254,24 @@ store.put("d", 4);
 | Method | Description |
 |--------|-------------|
 | `putIfAbsent(K key, V value)` | Associates value with key only if not already present |
+| `putIfAbsent(K key, V value, long ttlSeconds)` | Same with TTL |
 | `computeIfAbsent(K key, Function mapper)` | Computes value if key is absent |
+| `computeIfAbsent(K key, Function mapper, long ttlSeconds)` | Same with TTL |
 | `computeIfPresent(K key, BiFunction mapper)` | Computes new value if key is present; can remove entry by returning null |
+
+### TTL Operations
+
+| Method | Description |
+|--------|-------------|
+| `put(K key, V value, long ttlSeconds)` | Associates value with TTL in seconds |
+| `getRemainingTTL(K key)` | Returns remaining TTL in seconds, or -1 if no TTL |
+| `hasTTL(K key)` | Returns true if key has TTL set |
+| `setDefaultTTL(long ttlSeconds)` | Sets default TTL for future puts |
+| `removeExpired()` | Manually removes all expired entries |
+| `startCleaner()` | Starts background cleaner thread |
+| `stopCleaner()` | Stops background cleaner thread |
+| `isCleanerRunning()` | Checks if cleaner is active |
+| `shutdown()` | Stops all background threads |
 
 ### Persistence Operations
 
