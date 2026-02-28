@@ -1,0 +1,7 @@
+name: InvalidYaml
+tabs_and_spaces_mix:
+  - item1
+	- item2
+bad_indent:
+ key: value
+  another_key: [unclosed list

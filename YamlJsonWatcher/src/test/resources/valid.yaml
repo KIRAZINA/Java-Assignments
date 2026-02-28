@@ -1,0 +1,12 @@
+name: Bob
+age: 25
+active: false
+score: 72.3
+address:
+  street: 456 Oak Ave
+  city: Shelbyville
+  zip: "62565"
+tags:
+  - python
+  - devops
+metadata: null

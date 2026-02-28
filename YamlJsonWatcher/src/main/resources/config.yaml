@@ -1,0 +1,31 @@
+# YamlJsonWatcher — Default Configuration
+# All values can be overridden via environment variables.
+
+# Directory to watch for new/modified files (env: TARGET_DIR)
+targetDir: "./watch"
+
+# Output directory for converted files; leave empty to use targetDir (env: OUTPUT_DIR)
+outputDir: ""
+
+# File extensions to monitor (env: EXTENSIONS — comma-separated)
+extensions:
+  - ".json"
+  - ".yaml"
+  - ".yml"
+
+# Debounce window in milliseconds — prevents duplicate events for the same file (env: DEBOUNCE_MS)
+debounceMs: 1000
+
+# Logging level: TRACE, DEBUG, INFO, WARN, ERROR (env: LOG_LEVEL)
+logLevel: "INFO"
+
+# Path for the rolling log file (env: LOG_FILE)
+logFilePath: "logs/yamlJsonWatcher.log"
+
+# Files with at least this many top-level rows (array elements or object keys) are considered
+# "large". For large files SUCCESS entries are logged in compact format at INFO level
+# (filename only — no full path, no diagnostics). The full entry is written at DEBUG.
+# Failures are always logged in full at ERROR regardless of size.
+# Set to 0 to always use the full format. (env: LARGE_FILE_THRESHOLD)
+largeFileRowThreshold: 500
+

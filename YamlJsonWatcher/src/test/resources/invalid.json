@@ -1,0 +1,5 @@
+{
+  "name": "Charlie",
+  "broken": true,
+  "missingClosingBrace": {
+    "nested": "value"

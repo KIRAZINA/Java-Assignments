@@ -1,0 +1,16 @@
+{
+  "level1": {
+    "level2": {
+      "level3": {
+        "value": "deep",
+        "numbers": [1, 2, 3, 4, 5],
+        "flag": true
+      }
+    },
+    "siblings": ["a", "b", "c"]
+  },
+  "topArray": [
+    {"id": 1, "label": "first"},
+    {"id": 2, "label": "second"}
+  ]
+}
