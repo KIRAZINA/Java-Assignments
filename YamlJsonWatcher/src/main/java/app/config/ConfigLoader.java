@@ -16,8 +16,11 @@ import java.util.stream.Collectors;
  *
  * <p>Supported environment variables:
  * <ul>
- *   <li>{@code TARGET_DIR}           — directory to watch</li>
+ *   <li>{@code INPUT_DIR}            — directory to watch</li>
+ *   <li>{@code PROCESSING_DIR}       — directory for processing</li>
  *   <li>{@code OUTPUT_DIR}           — directory for output files</li>
+ *   <li>{@code ARCHIVE_DIR}          — directory for successfully processed files</li>
+ *   <li>{@code ERROR_DIR}            — directory for failed files</li>
  *   <li>{@code EXTENSIONS}           — comma-separated list, e.g. {@code .json,.yaml}</li>
  *   <li>{@code DEBOUNCE_MS}          — debounce window in milliseconds</li>
  *   <li>{@code LOG_LEVEL}            — SLF4J log level string</li>
@@ -31,8 +34,11 @@ public class ConfigLoader {
     private static final String CONFIG_RESOURCE = "/config.yaml";
 
     // Default values used when neither config.yaml nor env vars supply a value
-    private static final String DEFAULT_TARGET_DIR              = "./watch";
-    private static final String DEFAULT_OUTPUT_DIR              = "";
+    private static final String DEFAULT_INPUT_DIR               = "./watch/input";
+    private static final String DEFAULT_PROCESSING_DIR          = "./watch/processing";
+    private static final String DEFAULT_OUTPUT_DIR              = "./watch/output";
+    private static final String DEFAULT_ARCHIVE_DIR             = "./watch/archive";
+    private static final String DEFAULT_ERROR_DIR               = "./watch/error";
     private static final long   DEFAULT_DEBOUNCE_MS             = 1000L;
     private static final String DEFAULT_LOG_LEVEL               = "INFO";
     private static final String DEFAULT_LOG_FILE                = "logs/yamlJsonWatcher.log";
@@ -43,22 +49,25 @@ public class ConfigLoader {
     public AppConfig load() {
         Map<String, Object> yaml = readYaml();
 
-        String targetDir   = resolve("TARGET_DIR",   getString(yaml, "targetDir",   DEFAULT_TARGET_DIR));
-        String outputDir   = resolve("OUTPUT_DIR",   getString(yaml, "outputDir",   DEFAULT_OUTPUT_DIR));
-        long   debounceMs  = resolveLong("DEBOUNCE_MS", getLong(yaml, "debounceMs",  DEFAULT_DEBOUNCE_MS));
-        String logLevel    = resolve("LOG_LEVEL",    getString(yaml, "logLevel",    DEFAULT_LOG_LEVEL));
-        String logFilePath = resolve("LOG_FILE",     getString(yaml, "logFilePath", DEFAULT_LOG_FILE));
+        String inputDir      = resolve("INPUT_DIR",      getString(yaml, "inputDir",      DEFAULT_INPUT_DIR));
+        String processingDir = resolve("PROCESSING_DIR", getString(yaml, "processingDir", DEFAULT_PROCESSING_DIR));
+        String outputDir     = resolve("OUTPUT_DIR",     getString(yaml, "outputDir",     DEFAULT_OUTPUT_DIR));
+        String archiveDir    = resolve("ARCHIVE_DIR",    getString(yaml, "archiveDir",    DEFAULT_ARCHIVE_DIR));
+        String errorDir      = resolve("ERROR_DIR",      getString(yaml, "errorDir",      DEFAULT_ERROR_DIR));
+        long   debounceMs    = resolveLong("DEBOUNCE_MS", getLong(yaml, "debounceMs",  DEFAULT_DEBOUNCE_MS));
+        String logLevel      = resolve("LOG_LEVEL",    getString(yaml, "logLevel",    DEFAULT_LOG_LEVEL));
+        String logFilePath   = resolve("LOG_FILE",     getString(yaml, "logFilePath", DEFAULT_LOG_FILE));
         int largeFileRowThreshold = (int) resolveLong("LARGE_FILE_THRESHOLD",
                 getLong(yaml, "largeFileRowThreshold", DEFAULT_LARGE_FILE_ROW_THRESHOLD));
 
         List<String> extensions = resolveExtensions(yaml);
 
-        AppConfig config = new AppConfig(targetDir, outputDir, extensions, debounceMs, logLevel,
-                logFilePath, largeFileRowThreshold);
-        log.info("Configuration loaded: targetDir={}, outputDir='{}', extensions={}, debounceMs={}, "
-                        + "logLevel={}, largeFileRowThreshold={}",
-                config.targetDir(), config.effectiveOutputDir(), config.extensions(),
-                config.debounceMs(), config.logLevel(), config.largeFileRowThreshold());
+        AppConfig config = new AppConfig(inputDir, processingDir, outputDir, archiveDir, errorDir,
+                extensions, debounceMs, logLevel, logFilePath, largeFileRowThreshold);
+        log.info("Configuration loaded: inputDir={}, processingDir={}, outputDir={}, archiveDir={}, errorDir={}, "
+                        + "extensions={}, debounceMs={}, logLevel={}, largeFileRowThreshold={}",
+                config.inputDir(), config.processingDir(), config.outputDir(), config.archiveDir(), config.errorDir(),
+                config.extensions(), config.debounceMs(), config.logLevel(), config.largeFileRowThreshold());
         return config;
     }
 

@@ -26,10 +26,18 @@ class ConfigLoaderTest {
     }
 
     @Test
-    void load_defaultTargetDirIsSet() {
+    void load_defaultDirectoriesAreSet() {
         AppConfig config = loader.load();
-        assertNotNull(config.targetDir());
-        assertFalse(config.targetDir().isBlank());
+        assertNotNull(config.inputDir());
+        assertFalse(config.inputDir().isBlank());
+        assertNotNull(config.processingDir());
+        assertFalse(config.processingDir().isBlank());
+        assertNotNull(config.outputDir());
+        assertFalse(config.outputDir().isBlank());
+        assertNotNull(config.archiveDir());
+        assertFalse(config.archiveDir().isBlank());
+        assertNotNull(config.errorDir());
+        assertFalse(config.errorDir().isBlank());
     }
 
     @Test
@@ -62,21 +70,7 @@ class ConfigLoaderTest {
                 "largeFileRowThreshold should default to a positive value");
     }
 
-    // ── effectiveOutputDir logic ───────────────────────────────────────────────
 
-    @Test
-    void effectiveOutputDir_whenOutputDirBlank_returnsTargetDir() {
-        AppConfig cfg = new AppConfig("./watch", "", List.of(".json"), 500L, "INFO", "logs/x.log", 500);
-        assertEquals("./watch", cfg.effectiveOutputDir());
-    }
-
-    @Test
-    void effectiveOutputDir_whenOutputDirSet_returnsOutputDir() {
-        AppConfig cfg = new AppConfig("./watch", "./out", List.of(".json"), 500L, "INFO", "logs/x.log", 500);
-        assertEquals("./out", cfg.effectiveOutputDir());
-    }
-
-    // ── resolve() helper — package-private ───────────────────────────────────
 
     @Test
     void resolve_whenEnvVarAbsent_returnsFallback() {

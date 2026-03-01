@@ -27,10 +27,14 @@ class DirectoryWatcherIntegrationTest {
     private Thread           watcherThread;
 
     @BeforeEach
-    void setUp() throws InterruptedException {
+    void setUp() throws InterruptedException, IOException {
+        Files.createDirectories(watchDir.resolve("input"));
         config = new AppConfig(
-                watchDir.toString(),   // targetDir
-                watchDir.toString(),   // outputDir (same)
+                watchDir.resolve("input").toString(),
+                watchDir.resolve("processing").toString(),
+                watchDir.resolve("output").toString(),
+                watchDir.resolve("archive").toString(),
+                watchDir.resolve("error").toString(),
                 List.of(".json", ".yaml", ".yml"),
                 300L,                  // debounceMs (fast for tests)
                 "INFO",
@@ -58,16 +62,19 @@ class DirectoryWatcherIntegrationTest {
     @Timeout(10)
     void dropJsonFile_producesYamlFile() throws IOException, InterruptedException {
         String json = "{\"hello\":\"world\",\"count\":7}";
-        Path src = watchDir.resolve("test_output.json");
+        Path src = watchDir.resolve("input").resolve("test_output.json");
         Files.writeString(src, json);
 
-        Path expected = watchDir.resolve("test_output.yaml");
+        Path expected = watchDir.resolve("output").resolve("test_output.yaml");
         waitForFile(expected, 5);
 
         assertTrue(Files.exists(expected), "YAML output file should be created");
         String content = Files.readString(expected);
         assertTrue(content.contains("hello"), "YAML should contain key 'hello'");
         assertTrue(content.contains("world"), "YAML should contain value 'world'");
+        
+        // Assert json went to archive
+        assertTrue(Files.exists(watchDir.resolve("archive").resolve("test_output.json")), "JSON should be grouped to archive");
     }
 
     // ── YAML input ────────────────────────────────────────────────────────────
@@ -76,16 +83,18 @@ class DirectoryWatcherIntegrationTest {
     @Timeout(10)
     void dropYamlFile_producesJsonFile() throws IOException, InterruptedException {
         String yaml = "name: integration\nvalue: 99\n";
-        Path src = watchDir.resolve("test_output.yaml");
+        Path src = watchDir.resolve("input").resolve("test_output.yaml");
         Files.writeString(src, yaml);
 
-        Path expected = watchDir.resolve("test_output.json");
+        Path expected = watchDir.resolve("output").resolve("test_output.json");
         waitForFile(expected, 5);
 
         assertTrue(Files.exists(expected), "JSON output file should be created");
         String content = Files.readString(expected);
         assertTrue(content.contains("integration"), "JSON should contain 'integration'");
         assertTrue(content.contains("99"),           "JSON should contain value 99");
+
+        assertTrue(Files.exists(watchDir.resolve("archive").resolve("test_output.yaml")), "YAML should be archived");
     }
 
     // ── Temp file ignored ─────────────────────────────────────────────────────
@@ -93,15 +102,18 @@ class DirectoryWatcherIntegrationTest {
     @Test
     @Timeout(6)
     void dropTempFile_producesNoOutput() throws IOException, InterruptedException {
-        Files.writeString(watchDir.resolve("~temp.json"), "{\"x\":1}");
-        Files.writeString(watchDir.resolve("ignored.tmp"), "{\"y\":2}");
+        Files.writeString(watchDir.resolve("input").resolve("~temp.json"), "{\"x\":1}");
+        Files.writeString(watchDir.resolve("input").resolve("ignored.tmp"), "{\"y\":2}");
 
         // Wait a generous window and then assert nothing was created
         Thread.sleep(2_500);
 
-        long outputCount = Files.list(watchDir)
-                .filter(p -> p.getFileName().toString().endsWith(".yaml"))
-                .count();
+        long outputCount = 0;
+        if (Files.exists(watchDir.resolve("output"))) {
+            outputCount = Files.list(watchDir.resolve("output"))
+                    .filter(p -> p.getFileName().toString().endsWith(".yaml"))
+                    .count();
+        }
         assertEquals(0, outputCount, "No YAML output should be generated for temp files");
     }
 
@@ -110,14 +122,14 @@ class DirectoryWatcherIntegrationTest {
     @Test
     @Timeout(6)
     void dropInvalidJsonFile_producesNoOutput() throws IOException, InterruptedException {
-        Path src = watchDir.resolve("broken.json");
+        Path src = watchDir.resolve("input").resolve("broken.json");
         Files.writeString(src, "{\"key\": NOTVALID");
 
         // Source file must remain untouched
         Thread.sleep(2_500);
 
-        assertTrue(Files.exists(src), "Source file must remain after failed conversion");
-        assertFalse(Files.exists(watchDir.resolve("broken.yaml")),
+        assertTrue(Files.exists(watchDir.resolve("error").resolve("broken.json")), "Source file must be moved to error directory");
+        assertFalse(Files.exists(watchDir.resolve("output").resolve("broken.yaml")),
                 "No YAML output should exist for invalid JSON");
     }
 
@@ -127,10 +139,10 @@ class DirectoryWatcherIntegrationTest {
     @Timeout(10)
     void dropYmlFile_producesJsonFile() throws IOException, InterruptedException {
         String yaml = "app:\n  name: test\n  port: 8080\n";
-        Path src = watchDir.resolve("config.yml");
+        Path src = watchDir.resolve("input").resolve("config.yml");
         Files.writeString(src, yaml);
 
-        Path expected = watchDir.resolve("config.json");
+        Path expected = watchDir.resolve("output").resolve("config.json");
         waitForFile(expected, 5);
 
         assertTrue(Files.exists(expected));

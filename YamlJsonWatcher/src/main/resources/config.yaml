@@ -1,11 +1,20 @@
 # YamlJsonWatcher — Default Configuration
 # All values can be overridden via environment variables.
 
-# Directory to watch for new/modified files (env: TARGET_DIR)
-targetDir: "./watch"
+# Directory to watch for new/modified files (env: INPUT_DIR)
+inputDir: "./watch/input"
 
-# Output directory for converted files; leave empty to use targetDir (env: OUTPUT_DIR)
-outputDir: ""
+# Directory for files currently being processed (env: PROCESSING_DIR)
+processingDir: "./watch/processing"
+
+# Output directory for converted files (env: OUTPUT_DIR)
+outputDir: "./watch/output"
+
+# Directory for successfully processed original files (env: ARCHIVE_DIR)
+archiveDir: "./watch/archive"
+
+# Directory for original files that caused validation or conversion errors (env: ERROR_DIR)
+errorDir: "./watch/error"
 
 # File extensions to monitor (env: EXTENSIONS — comma-separated)
 extensions:

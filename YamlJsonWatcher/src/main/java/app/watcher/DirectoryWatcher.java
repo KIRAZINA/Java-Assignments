@@ -72,19 +72,27 @@ public class DirectoryWatcher implements Runnable {
 
     @Override
     public void run() {
-        Path watchDir = Paths.get(config.targetDir()).toAbsolutePath();
+        Path inputDir = Paths.get(config.inputDir()).toAbsolutePath();
+        Path processingDir = Paths.get(config.processingDir()).toAbsolutePath();
+        Path outputDir = Paths.get(config.outputDir()).toAbsolutePath();
+        Path archiveDir = Paths.get(config.archiveDir()).toAbsolutePath();
+        Path errorDir = Paths.get(config.errorDir()).toAbsolutePath();
 
         try {
-            Files.createDirectories(watchDir);
+            Files.createDirectories(inputDir);
+            Files.createDirectories(processingDir);
+            Files.createDirectories(outputDir);
+            Files.createDirectories(archiveDir);
+            Files.createDirectories(errorDir);
         } catch (IOException e) {
-            log.error("Cannot create watch directory {}: {}", watchDir, e.getMessage());
+            log.error("Cannot create necessary directories: {}", e.getMessage());
             return;
         }
 
-        log.info("Watching directory: {}", watchDir);
+        log.info("Watching directory: {}", inputDir);
 
         try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
-            watchDir.register(watchService, ENTRY_CREATE, ENTRY_MODIFY);
+            inputDir.register(watchService, ENTRY_CREATE, ENTRY_MODIFY);
             running.set(true);
 
             while (running.get()) {
@@ -110,7 +118,7 @@ public class DirectoryWatcher implements Runnable {
                     @SuppressWarnings("unchecked")
                     WatchEvent<Path> pathEvent = (WatchEvent<Path>) event;
                     Path relative = pathEvent.context();
-                    Path absolute = watchDir.resolve(relative);
+                    Path absolute = inputDir.resolve(relative);
 
                     dispatchDebounced(absolute);
                 }

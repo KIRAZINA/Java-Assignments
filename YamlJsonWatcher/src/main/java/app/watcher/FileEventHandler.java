@@ -67,14 +67,28 @@ public class FileEventHandler {
                 return;
             }
 
-            String fileName  = path.getFileName().toString().toLowerCase();
+            Path processingDir = Paths.get(config.processingDir());
+            Path processingPath = processingDir.resolve(path.getFileName());
+
+            try {
+                Files.move(path, processingPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.FileSystemException e) {
+                // File might be locked by OS (still copying)
+                log.debug("File is locked, skipping for now: {}", path.getFileName());
+                return;
+            } catch (IOException e) {
+                log.error("Failed to move file to processing directory: {}", e.getMessage());
+                return;
+            }
+
+            String fileName  = processingPath.getFileName().toString().toLowerCase();
             boolean isJson   = fileName.endsWith(".json");
             boolean isYaml   = fileName.endsWith(".yaml") || fileName.endsWith(".yml");
 
             if (isJson) {
-                handleJson(path);
+                handleJson(processingPath);
             } else if (isYaml) {
-                handleYaml(path);
+                handleYaml(processingPath);
             }
         } catch (Exception e) {
             log.error("Unexpected error while handling file {}: {}", path, e.getMessage(), e);
@@ -89,12 +103,19 @@ public class FileEventHandler {
             ConversionResult failure = ConversionResult.failure(src, sizeOf(src), 0L,
                     "Validation failed: " + validationError.get());
             conversionLogger.logFailure(failure);
+            moveToError(src, "Validation failed: " + validationError.get());
             return;
         }
 
         Path dest   = buildDestPath(src, ".yaml");
         ConversionResult result = converter.convertJsonToYaml(src, dest);
-        conversionLogger.log(result);
+        if (result.status() == app.converter.ConversionStatus.SUCCESS) {
+            conversionLogger.log(result);
+            moveToArchive(src);
+        } else {
+            conversionLogger.logFailure(result);
+            moveToError(src, result.diagnostics());
+        }
     }
 
     private void handleYaml(Path src) {
@@ -103,12 +124,19 @@ public class FileEventHandler {
             ConversionResult failure = ConversionResult.failure(src, sizeOf(src), 0L,
                     "Validation failed: " + validationError.get());
             conversionLogger.logFailure(failure);
+            moveToError(src, "Validation failed: " + validationError.get());
             return;
         }
 
         Path dest   = buildDestPath(src, ".json");
         ConversionResult result = converter.convertYamlToJson(src, dest);
-        conversionLogger.log(result);
+        if (result.status() == app.converter.ConversionStatus.SUCCESS) {
+            conversionLogger.log(result);
+            moveToArchive(src);
+        } else {
+            conversionLogger.logFailure(result);
+            moveToError(src, result.diagnostics());
+        }
     }
 
     /**
@@ -148,8 +176,39 @@ public class FileEventHandler {
                 : srcName;
         String destName  = baseName + newExt;
 
-        Path outputDir   = Paths.get(config.effectiveOutputDir());
+        Path outputDir   = Paths.get(config.outputDir());
         return outputDir.resolve(destName);
+    }
+
+    private void moveToArchive(Path src) {
+        String archiveDirStr = config.archiveDir();
+        if (archiveDirStr == null || archiveDirStr.isBlank()) {
+            try { Files.deleteIfExists(src); } catch (IOException ignored) {}
+            return;
+        }
+        try {
+            Path archiveDir = Paths.get(archiveDirStr);
+            Files.createDirectories(archiveDir);
+            Files.move(src, archiveDir.resolve(src.getFileName()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            log.error("Failed to move {} to archive: {}", src.getFileName(), e.getMessage());
+        }
+    }
+
+    private void moveToError(Path src, String errorMsg) {
+        String errorDirStr = config.errorDir();
+        if (errorDirStr == null || errorDirStr.isBlank()) {
+            return; // left in processing
+        }
+        try {
+            Path errorDir = Paths.get(errorDirStr);
+            Files.createDirectories(errorDir);
+            Path dest = errorDir.resolve(src.getFileName());
+            Files.move(src, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(errorDir.resolve(src.getFileName().toString() + ".error.log"), errorMsg);
+        } catch (IOException e) {
+            log.error("Failed to move {} to error directory: {}", src.getFileName(), e.getMessage());
+        }
     }
 
     private long sizeOf(Path path) {

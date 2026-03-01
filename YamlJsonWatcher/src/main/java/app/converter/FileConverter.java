@@ -55,7 +55,9 @@ public class FileConverter {
             ensureParentDirs(dest);
             JsonNode tree = readJson(src);
             int rowCount = countRows(tree);
-            writeYaml(tree, dest);
+            Path tmpDest = dest.resolveSibling(dest.getFileName().toString() + ".tmp");
+            writeYaml(tree, tmpDest);
+            Files.move(tmpDest, dest, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             long duration = System.currentTimeMillis() - start;
             long outputSize = sizeOf(dest);
             log.debug("JSON→YAML: {} → {} ({} ms, {} rows)", src, dest, duration, rowCount);
@@ -83,7 +85,9 @@ public class FileConverter {
             ensureParentDirs(dest);
             JsonNode tree = readYaml(src);
             int rowCount = countRows(tree);
-            writeJson(tree, dest);
+            Path tmpDest = dest.resolveSibling(dest.getFileName().toString() + ".tmp");
+            writeJson(tree, tmpDest);
+            Files.move(tmpDest, dest, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             long duration = System.currentTimeMillis() - start;
             long outputSize = sizeOf(dest);
             log.debug("YAML→JSON: {} → {} ({} ms, {} rows)", src, dest, duration, rowCount);

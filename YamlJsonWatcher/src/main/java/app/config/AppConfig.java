@@ -7,16 +7,15 @@ import java.util.List;
  * All values are loaded from config.yaml and may be overridden by environment variables.
  */
 public record AppConfig(
-        String targetDir,
+        String inputDir,
+        String processingDir,
         String outputDir,
+        String archiveDir,
+        String errorDir,
         List<String> extensions,
         long debounceMs,
         String logLevel,
         String logFilePath,
         int largeFileRowThreshold
 ) {
-    /** Returns the effective output directory: outputDir if set, otherwise targetDir. */
-    public String effectiveOutputDir() {
-        return (outputDir == null || outputDir.isBlank()) ? targetDir : outputDir;
-    }
 }

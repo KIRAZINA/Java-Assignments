@@ -56,11 +56,11 @@ The service starts, creates the watch directory if missing, and logs:
 
 ```
 === YamlJsonWatcher starting ===
-Configuration loaded: targetDir=./watch, outputDir=./watch, extensions=[.json, .yaml, .yml], debounceMs=1000, logLevel=INFO
-Watching directory: /absolute/path/to/watch
+Configuration loaded: inputDir=/home/app/watch/input, processingDir=/home/app/watch/processing, outputDir=/home/app/watch/output, archiveDir=/home/app/watch/archive, errorDir=/home/app/watch/error, extensions=[.json, .yaml, .yml], debounceMs=1000, logLevel=INFO, largeFileRowThreshold=500
+Watching directory: /absolute/path/to/watch/input
 ```
 
-Copy a `.json` file into the `watch/` directory — a `.yaml` file appears within ~1 second (and vice-versa).
+Copy a `.json` file into the `watch/input/` directory — a `.yaml` file appears within ~1 second in the `watch/output/` directory (and vice-versa). The original file will be moved to `watch/archive/`.
 
 Stop the service with **Ctrl+C** (SIGTERM); the shutdown hook ensures clean exit.
 
@@ -72,8 +72,11 @@ Configuration is loaded from **`config.yaml`** (bundled in the JAR) and can be o
 
 | `config.yaml` key | Env var | Default | Description |
 |---|---|---|---|
-| `targetDir` | `TARGET_DIR` | `./watch` | Directory to monitor |
-| `outputDir` | `OUTPUT_DIR` | _(same as targetDir)_ | Output directory for converted files |
+| `inputDir` | `INPUT_DIR` | `./watch/input` | Directory to monitor for new files |
+| `processingDir` | `PROCESSING_DIR` | `./watch/processing` | Temporary working directory during conversion |
+| `outputDir` | `OUTPUT_DIR` | `./watch/output` | Output directory for converted files |
+| `archiveDir` | `ARCHIVE_DIR` | `./watch/archive` | Directory to archive original files on success |
+| `errorDir` | `ERROR_DIR` | `./watch/error` | Directory for files that fail validation |
 | `extensions` | `EXTENSIONS` (comma-sep) | `.json,.yaml,.yml` | File extensions to watch |
 | `debounceMs` | `DEBOUNCE_MS` | `1000` | Duplicate-event suppression window (ms) |
 | `logLevel` | `LOG_LEVEL` | `INFO` | SLF4J log level |
@@ -82,7 +85,7 @@ Configuration is loaded from **`config.yaml`** (bundled in the JAR) and can be o
 ### Example — override via environment variables
 
 ```bash
-TARGET_DIR=/data/input OUTPUT_DIR=/data/output LOG_LEVEL=DEBUG \
+INPUT_DIR=/data/input OUTPUT_DIR=/data/output ARCHIVE_DIR=/data/archive ERROR_DIR=/data/error LOG_LEVEL=DEBUG \
   java -jar target/YamlJsonWatcher-1.0-SNAPSHOT.jar
 ```
 
@@ -91,8 +94,11 @@ TARGET_DIR=/data/input OUTPUT_DIR=/data/output LOG_LEVEL=DEBUG \
 Place a `config.yaml` **next to the JAR** (on the classpath) or mount it as a volume in Docker:
 
 ```yaml
-targetDir: /data/input
+inputDir: /data/input
+processingDir: /data/processing
 outputDir: /data/output
+archiveDir: /data/archive
+errorDir: /data/error
 extensions:
   - .json
   - .yaml
@@ -116,7 +122,7 @@ Every conversion produces a single JSON log line:
 Failed conversions are logged at **ERROR** level:
 
 ```json
-{"timestamp":"2026-02-28T09:13:01.456Z","source":"/watch/bad.json","result":"","inputBytes":58,"outputBytes":0,"durationMs":2,"status":"FAILURE","diagnostics":"Validation failed: Invalid JSON in 'bad.json': Unexpected character at line 3, col 7"}
+{"timestamp":"2026-02-28T09:13:01.456Z","source":"/watch/processing/bad.json","result":"","inputBytes":58,"outputBytes":0,"durationMs":2,"status":"FAILURE","diagnostics":"Validation failed: Invalid JSON in 'bad.json': Unexpected character at line 3, col 7"}
 ```
 
 ---
@@ -184,8 +190,11 @@ Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-Environment="TARGET_DIR=/data/watch"
+Environment="INPUT_DIR=/data/input"
 Environment="OUTPUT_DIR=/data/output"
+Environment="PROCESSING_DIR=/data/processing"
+Environment="ARCHIVE_DIR=/data/archive"
+Environment="ERROR_DIR=/data/error"
 Environment="LOG_FILE=/var/log/yamljsonwatcher/app.log"
 
 [Install]
@@ -210,7 +219,7 @@ sudo systemctl status yamljsonwatcher
 nssm install YamlJsonWatcher "C:\Program Files\Java\jdk-17\bin\java.exe"
 nssm set  YamlJsonWatcher AppParameters "-jar C:\opt\yamlwatcher\YamlJsonWatcher-1.0-SNAPSHOT.jar"
 nssm set  YamlJsonWatcher AppDirectory   "C:\opt\yamlwatcher"
-nssm set  YamlJsonWatcher AppEnvironmentExtra "TARGET_DIR=C:\data\watch" "OUTPUT_DIR=C:\data\output"
+nssm set  YamlJsonWatcher AppEnvironmentExtra "INPUT_DIR=C:\data\input" "OUTPUT_DIR=C:\data\output" "PROCESSING_DIR=C:\data\processing" "ARCHIVE_DIR=C:\data\archive" "ERROR_DIR=C:\data\error"
 nssm set  YamlJsonWatcher AppStdout      "C:\opt\yamlwatcher\logs\stdout.log"
 nssm set  YamlJsonWatcher AppStderr      "C:\opt\yamlwatcher\logs\stderr.log"
 nssm start YamlJsonWatcher
@@ -226,17 +235,23 @@ Manage the service via `services.msc` or `nssm start/stop/restart YamlJsonWatche
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY target/YamlJsonWatcher-1.0-SNAPSHOT.jar app.jar
-ENV TARGET_DIR=/data/watch
+ENV INPUT_DIR=/data/input
 ENV OUTPUT_DIR=/data/output
-VOLUME ["/data/watch", "/data/output"]
+ENV PROCESSING_DIR=/data/processing
+ENV ARCHIVE_DIR=/data/archive
+ENV ERROR_DIR=/data/error
+VOLUME ["/data/input", "/data/output", "/data/processing", "/data/archive", "/data/error"]
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
 ```bash
 docker build -t yamljsonwatcher .
 docker run -d \
-  -v /host/watch:/data/watch \
+  -v /host/input:/data/input \
   -v /host/output:/data/output \
+  -v /host/processing:/data/processing \
+  -v /host/archive:/data/archive \
+  -v /host/error:/data/error \
   --name yamljsonwatcher yamljsonwatcher
 ```
 
