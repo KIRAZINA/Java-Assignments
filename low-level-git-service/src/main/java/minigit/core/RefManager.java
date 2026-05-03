@@ -1,0 +1,250 @@
+package minigit.core;
+
+import minigit.model.Ref;
+import minigit.util.PathUtils;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Manages Git references (refs) including HEAD and branch references.
+ * References are stored as plain text files in .mini-git/refs/ and .mini-git/HEAD.
+ */
+public class RefManager {
+    
+    private final Path gitRoot;
+    private final Path refsDir;
+    private final Path headPath;
+    
+    /**
+     * Creates a RefManager for the given repository.
+     * 
+     * @param gitRoot the root directory of the git repository
+     */
+    public RefManager(Path gitRoot) {
+        this.gitRoot = gitRoot;
+        this.refsDir = gitRoot.resolve(".mini-git").resolve("refs");
+        this.headPath = gitRoot.resolve(".mini-git").resolve("HEAD");
+    }
+    
+    /**
+     * Stores a reference.
+     * 
+     * @param ref the reference to store
+     * @throws RuntimeException if storage fails
+     */
+    public void storeRef(Ref ref) {
+        if (!PathUtils.isValidRefName(ref.getName())) {
+            throw new IllegalArgumentException("Invalid ref name: " + ref.getName());
+        }
+        
+        Path refPath = PathUtils.getRefPath(gitRoot, ref.getName());
+        PathUtils.ensureParentExists(refPath);
+        
+        try {
+            String content = ref.serialize();
+            Files.write(refPath, content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to store ref: " + ref.getName(), e);
+        }
+    }
+    
+    /**
+     * Retrieves a reference by name.
+     * 
+     * @param name the reference name (e.g., "heads/main" or "HEAD")
+     * @return the Ref object, or null if not found
+     * @throws RuntimeException if retrieval fails
+     */
+    public Ref getRef(String name) {
+        Path refPath = PathUtils.getRefPath(gitRoot, name);
+        
+        if (!Files.exists(refPath)) {
+            return null;
+        }
+        
+        try {
+            String content = Files.readString(refPath, java.nio.charset.StandardCharsets.UTF_8);
+            content = content.trim();
+            return Ref.parse(name, content);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read ref: " + name, e);
+        }
+    }
+    
+    /**
+     * Deletes a reference.
+     * 
+     * @param name the reference name
+     * @return true if the reference was deleted, false if it didn't exist
+     * @throws RuntimeException if deletion fails
+     */
+    public boolean deleteRef(String name) {
+        if (name.equals("HEAD")) {
+            throw new IllegalArgumentException("Cannot delete HEAD reference");
+        }
+        
+        Path refPath = PathUtils.getRefPath(gitRoot, name);
+        
+        try {
+            return Files.deleteIfExists(refPath);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to delete ref: " + name, e);
+        }
+    }
+    
+    /**
+     * Lists all references in the repository.
+     * 
+     * @return list of all references
+     * @throws RuntimeException if listing fails
+     */
+    public List<Ref> listRefs() {
+        List<Ref> refs = new ArrayList<>();
+        
+        // Add HEAD
+        Ref headRef = getRef("HEAD");
+        if (headRef != null) {
+            refs.add(headRef);
+        }
+        
+        // Add all refs under .mini-git/refs/
+        if (Files.exists(refsDir)) {
+            try {
+                Files.walk(refsDir)
+                        .filter(Files::isRegularFile)
+                        .forEach(refPath -> {
+                            String relativePath = refsDir.relativize(refPath).toString();
+                            String refName = relativePath.replace('\\', '/'); // Normalize path separators
+                            Ref ref = getRef(refName);
+                            if (ref != null) {
+                                refs.add(ref);
+                            }
+                        });
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to list refs", e);
+            }
+        }
+        
+        return refs;
+    }
+    
+    /**
+     * Gets the current HEAD reference.
+     * 
+     * @return the HEAD reference, or null if not set
+     */
+    public Ref getHead() {
+        return getRef("HEAD");
+    }
+    
+    /**
+     * Sets the HEAD reference.
+     * 
+     * @param target the target (hash or symbolic ref)
+     * @param symbolic true if symbolic, false if direct
+     * @throws RuntimeException if setting fails
+     */
+    public void setHead(String target, boolean symbolic) {
+        Ref headRef = new Ref("HEAD", target, symbolic);
+        storeRef(headRef);
+    }
+    
+    /**
+     * Sets HEAD to point directly to a commit hash.
+     * 
+     * @param commitHash the commit hash
+     */
+    public void setHead(String commitHash) {
+        setHead(commitHash, false);
+    }
+    
+    /**
+     * Resolves a reference chain to get the final commit hash.
+     * Follows symbolic references until reaching a direct reference.
+     * 
+     * @param refName the reference name to resolve
+     * @return the final commit hash, or null if not found or chain is broken
+     */
+    public String resolveRef(String refName) {
+        Ref ref = getRef(refName);
+        if (ref == null) {
+            return null;
+        }
+        
+        return resolveRef(ref);
+    }
+    
+    /**
+     * Resolves a reference chain to get the final commit hash.
+     * 
+     * @param ref the reference to resolve
+     * @return the final commit hash, or null if chain is broken
+     */
+    public String resolveRef(Ref ref) {
+        if (ref.isDirect()) {
+            return ref.getTarget();
+        }
+        
+        // Follow symbolic reference
+        Ref targetRef = getRef(ref.getTarget());
+        if (targetRef == null) {
+            return null; // Broken symbolic reference
+        }
+        
+        // Prevent infinite loops
+        if (targetRef.getName().equals(ref.getName())) {
+            return null; // Circular reference
+        }
+        
+        return resolveRef(targetRef);
+    }
+    
+    /**
+     * Gets the current commit hash pointed to by HEAD.
+     * 
+     * @return the current commit hash, or null if HEAD is not set
+     */
+    public String getCurrentCommit() {
+        return resolveRef("HEAD");
+    }
+    
+    /**
+     * Initializes the reference directory structure.
+     * 
+     * @throws RuntimeException if initialization fails
+     */
+    public void initialize() {
+        PathUtils.ensureDirectoryExists(refsDir);
+        
+        // Create default HEAD pointing to main branch
+        PathUtils.ensureDirectoryExists(refsDir.resolve("heads"));
+        Ref defaultHead = Ref.symbolic("HEAD", "refs/heads/main");
+        storeRef(defaultHead);
+    }
+    
+    /**
+     * Validates reference integrity.
+     * Checks that all symbolic references resolve to valid targets.
+     * 
+     * @return the number of broken references found
+     */
+    public int validateIntegrity() {
+        List<Ref> refs = listRefs();
+        int brokenCount = 0;
+        
+        for (Ref ref : refs) {
+            if (ref.isSymbolic()) {
+                String resolved = resolveRef(ref);
+                if (resolved == null) {
+                    brokenCount++;
+                }
+            }
+        }
+        
+        return brokenCount;
+    }
+}
