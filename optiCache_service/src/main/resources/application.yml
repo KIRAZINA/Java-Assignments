@@ -1,0 +1,5 @@
+cache:
+  maxSize: 100
+  ttlSeconds: 300
+external-api:
+  timeout-ms: 150
