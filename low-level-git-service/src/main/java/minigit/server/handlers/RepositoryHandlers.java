@@ -35,7 +35,7 @@ public class RepositoryHandlers {
             
             repository.initialize();
             
-            return Response.created("Repository initialized successfully");
+            return Response.created("/init", "Repository initialized successfully");
         } catch (Exception e) {
             return Response.internalServerError("Failed to initialize repository: " + e.getMessage());
         }

@@ -1,10 +1,5 @@
 package minigit.server;
 
-import minigit.core.Repository;
-import minigit.server.handlers.ObjectHandlers;
-import minigit.server.handlers.RefHandlers;
-import minigit.server.handlers.RepositoryHandlers;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -12,21 +7,27 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Paths;
 
+import minigit.core.Repository;
+import minigit.server.handlers.ObjectHandlers;
+import minigit.server.handlers.RefHandlers;
+import minigit.server.handlers.RepositoryHandlers;
+
 /**
  * Main HTTP server implementation for Mini-Git.
  * Uses raw ServerSocket to handle HTTP requests without any frameworks.
  */
 public class HttpServer {
     
-    private final int port;
+    private int port;
     private final Repository repository;
     private final Router router;
     private volatile boolean running = false;
+    private ServerSocket serverSocket;
     
     /**
      * Creates an HttpServer on the specified port.
      * 
-     * @param port the port to listen on
+     * @param port the port to listen on (0 for random available port)
      * @param repositoryPath the path to the repository directory
      */
     public HttpServer(int port, String repositoryPath) {
@@ -76,23 +77,25 @@ public class HttpServer {
             throw new IllegalStateException("Server is already running");
         }
         
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
-            running = true;
-            System.out.println("Mini-Git HTTP Server started on port " + port);
-            System.out.println("Repository: " + repository.getGitRoot());
-            System.out.println("Available endpoints:");
-            for (String route : router.getRoutes()) {
-                System.out.println("  " + route);
-            }
-            
-            while (running) {
-                try {
-                    Socket clientSocket = serverSocket.accept();
-                    handleConnection(clientSocket);
-                } catch (IOException e) {
-                    if (running) {
-                        System.err.println("Error accepting connection: " + e.getMessage());
-                    }
+        serverSocket = new ServerSocket(port);
+        if (port == 0) {
+            this.port = serverSocket.getLocalPort();
+        }
+        running = true;
+        System.out.println("Mini-Git HTTP Server started on port " + port);
+        System.out.println("Repository: " + repository.getGitRoot());
+        System.out.println("Available endpoints:");
+        for (String route : router.getRoutes()) {
+            System.out.println("  " + route);
+        }
+        
+        while (running) {
+            try {
+                Socket clientSocket = serverSocket.accept();
+                handleConnection(clientSocket);
+            } catch (IOException e) {
+                if (running) {
+                    System.err.println("Error accepting connection: " + e.getMessage());
                 }
             }
         }
@@ -151,6 +154,13 @@ public class HttpServer {
      */
     public void stop() {
         running = false;
+        if (serverSocket != null && !serverSocket.isClosed()) {
+            try {
+                serverSocket.close();
+            } catch (IOException e) {
+                System.err.println("Error closing server socket: " + e.getMessage());
+            }
+        }
         System.out.println("Server stopped");
     }
     

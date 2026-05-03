@@ -29,12 +29,11 @@ public class IntegrationTest {
     
     private HttpServer server;
     private Thread serverThread;
-    private static final int PORT = 18080;
-    private static final String BASE_URL = "http://localhost:" + PORT;
+    private String baseUrl;
     
     @BeforeEach
     public void setUp() throws IOException {
-        server = new HttpServer(PORT, tempDir.toString());
+        server = new HttpServer(0, tempDir.toString());
         serverThread = new Thread(() -> {
             try {
                 server.start();
@@ -43,6 +42,15 @@ public class IntegrationTest {
             }
         });
         serverThread.start();
+        
+        // Wait a bit for server to bind to port
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        
+        baseUrl = "http://localhost:" + server.getPort();
         
         // Wait for server to start
         waitForServer();
@@ -54,27 +62,35 @@ public class IntegrationTest {
             server.stop();
         }
         if (serverThread != null) {
-            serverThread.interrupt();
+            try {
+                serverThread.join(500);
+            } catch (InterruptedException ie) {
+                serverThread.interrupt();
+            }
         }
     }
     
     private void waitForServer() {
         int attempts = 0;
-        while (attempts < 10) {
+        while (attempts < 20) {
             try {
-                HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + "/").openConnection();
+                HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/").openConnection();
                 conn.setRequestMethod("GET");
-                conn.setConnectTimeout(100);
-                conn.getResponseCode();
-                return;
-            } catch (IOException e) {
-                attempts++;
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
+                conn.setConnectTimeout(200);
+                conn.setReadTimeout(200);
+                int responseCode = conn.getResponseCode();
+                if (responseCode == 200) {
                     return;
                 }
+            } catch (IOException e) {
+                // Continue trying
+            }
+            attempts++;
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
         throw new RuntimeException("Server failed to start");
@@ -82,7 +98,7 @@ public class IntegrationTest {
     
     @Test
     public void testRootEndpoint() throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + "/").openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/").openConnection();
         conn.setRequestMethod("GET");
         
         assertEquals(200, conn.getResponseCode());
@@ -95,7 +111,7 @@ public class IntegrationTest {
     
     @Test
     public void testInitRepository() throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         conn.setRequestMethod("POST");
         
         assertEquals(201, conn.getResponseCode());
@@ -110,12 +126,12 @@ public class IntegrationTest {
     @Test
     public void testInitRepositoryTwice() throws IOException {
         // Initialize once
-        HttpURLConnection conn1 = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection conn1 = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         conn1.setRequestMethod("POST");
         assertEquals(201, conn1.getResponseCode());
         
         // Try to initialize again
-        HttpURLConnection conn2 = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection conn2 = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         conn2.setRequestMethod("POST");
         assertEquals(400, conn2.getResponseCode());
         
@@ -126,13 +142,13 @@ public class IntegrationTest {
     @Test
     public void testStoreAndRetrieveObject() throws IOException {
         // Initialize repository
-        HttpURLConnection initConn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         initConn.setRequestMethod("POST");
         assertEquals(201, initConn.getResponseCode());
         
         // Store an object
         String content = "Hello, World!";
-        HttpURLConnection putConn = (HttpURLConnection) new URL(BASE_URL + "/objects").openConnection();
+        HttpURLConnection putConn = (HttpURLConnection) new URL(baseUrl + "/objects").openConnection();
         putConn.setRequestMethod("PUT");
         putConn.setDoOutput(true);
         putConn.setRequestProperty("Content-Type", "application/octet-stream");
@@ -150,7 +166,7 @@ public class IntegrationTest {
         assertTrue(Sha1Hasher.isValidHash(hash));
         
         // Retrieve the object
-        HttpURLConnection getConn = (HttpURLConnection) new URL(BASE_URL + "/objects/" + hash).openConnection();
+        HttpURLConnection getConn = (HttpURLConnection) new URL(baseUrl + "/objects/" + hash).openConnection();
         getConn.setRequestMethod("GET");
         
         assertEquals(200, getConn.getResponseCode());
@@ -162,7 +178,7 @@ public class IntegrationTest {
     
     @Test
     public void testRetrieveNonExistentObject() throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + "/objects/nonexistent").openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/objects/nonexistent").openConnection();
         conn.setRequestMethod("GET");
         
         assertEquals(404, conn.getResponseCode());
@@ -174,12 +190,12 @@ public class IntegrationTest {
     @Test
     public void testHeadObject() throws IOException {
         // Initialize repository and store an object
-        HttpURLConnection initConn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         initConn.setRequestMethod("POST");
         assertEquals(201, initConn.getResponseCode());
         
         String content = "test content";
-        HttpURLConnection putConn = (HttpURLConnection) new URL(BASE_URL + "/objects").openConnection();
+        HttpURLConnection putConn = (HttpURLConnection) new URL(baseUrl + "/objects").openConnection();
         putConn.setRequestMethod("PUT");
         putConn.setDoOutput(true);
         
@@ -191,13 +207,13 @@ public class IntegrationTest {
         String hash = putConn.getHeaderField("Location").substring("/objects/".length());
         
         // HEAD request
-        HttpURLConnection headConn = (HttpURLConnection) new URL(BASE_URL + "/objects/" + hash).openConnection();
+        HttpURLConnection headConn = (HttpURLConnection) new URL(baseUrl + "/objects/" + hash).openConnection();
         headConn.setRequestMethod("HEAD");
         
         assertEquals(200, headConn.getResponseCode());
         
         // HEAD request for non-existent object
-        HttpURLConnection headConn2 = (HttpURLConnection) new URL(BASE_URL + "/objects/nonexistent").openConnection();
+        HttpURLConnection headConn2 = (HttpURLConnection) new URL(baseUrl + "/objects/nonexistent").openConnection();
         headConn2.setRequestMethod("HEAD");
         
         assertEquals(404, headConn2.getResponseCode());
@@ -206,14 +222,14 @@ public class IntegrationTest {
     @Test
     public void testCreateAndUpdateRef() throws IOException {
         // Initialize repository
-        HttpURLConnection initConn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         initConn.setRequestMethod("POST");
         assertEquals(201, initConn.getResponseCode());
         
         String hash = "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed";
         
         // Create a ref
-        HttpURLConnection putConn = (HttpURLConnection) new URL(BASE_URL + "/refs/heads/main").openConnection();
+        HttpURLConnection putConn = (HttpURLConnection) new URL(baseUrl + "/refs/heads/main").openConnection();
         putConn.setRequestMethod("PUT");
         putConn.setDoOutput(true);
         putConn.setRequestProperty("Content-Type", "text/plain");
@@ -227,7 +243,7 @@ public class IntegrationTest {
                      "Expected 200 or 201, got: " + responseCode);
         
         // Get the ref
-        HttpURLConnection getConn = (HttpURLConnection) new URL(BASE_URL + "/refs/heads/main").openConnection();
+        HttpURLConnection getConn = (HttpURLConnection) new URL(baseUrl + "/refs/heads/main").openConnection();
         getConn.setRequestMethod("GET");
         
         assertEquals(200, getConn.getResponseCode());
@@ -236,7 +252,7 @@ public class IntegrationTest {
         
         // Update the ref
         String newHash = "3bbf7c46c94fcfb415dbe95f408b9ce91ee846ef";
-        HttpURLConnection updateConn = (HttpURLConnection) new URL(BASE_URL + "/refs/heads/main").openConnection();
+        HttpURLConnection updateConn = (HttpURLConnection) new URL(baseUrl + "/refs/heads/main").openConnection();
         updateConn.setRequestMethod("PUT");
         updateConn.setDoOutput(true);
         
@@ -247,7 +263,7 @@ public class IntegrationTest {
         assertEquals(200, updateConn.getResponseCode());
         
         // Verify update
-        HttpURLConnection getConn2 = (HttpURLConnection) new URL(BASE_URL + "/refs/heads/main").openConnection();
+        HttpURLConnection getConn2 = (HttpURLConnection) new URL(baseUrl + "/refs/heads/main").openConnection();
         getConn2.setRequestMethod("GET");
         
         assertEquals(200, getConn2.getResponseCode());
@@ -258,7 +274,7 @@ public class IntegrationTest {
     @Test
     public void testListRefs() throws IOException {
         // Initialize repository
-        HttpURLConnection initConn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         initConn.setRequestMethod("POST");
         assertEquals(201, initConn.getResponseCode());
         
@@ -266,7 +282,7 @@ public class IntegrationTest {
         String hash1 = "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed";
         String hash2 = "3bbf7c46c94fcfb415dbe95f408b9ce91ee846ef";
         
-        HttpURLConnection putConn1 = (HttpURLConnection) new URL(BASE_URL + "/refs/heads/main").openConnection();
+        HttpURLConnection putConn1 = (HttpURLConnection) new URL(baseUrl + "/refs/heads/main").openConnection();
         putConn1.setRequestMethod("PUT");
         putConn1.setDoOutput(true);
         try (OutputStream os = putConn1.getOutputStream()) {
@@ -275,7 +291,7 @@ public class IntegrationTest {
         int rc1 = putConn1.getResponseCode();
         assertTrue(rc1 == 200 || rc1 == 201);
         
-        HttpURLConnection putConn2 = (HttpURLConnection) new URL(BASE_URL + "/refs/heads/feature").openConnection();
+        HttpURLConnection putConn2 = (HttpURLConnection) new URL(baseUrl + "/refs/heads/feature").openConnection();
         putConn2.setRequestMethod("PUT");
         putConn2.setDoOutput(true);
         try (OutputStream os = putConn2.getOutputStream()) {
@@ -285,7 +301,7 @@ public class IntegrationTest {
         assertTrue(rc2 == 200 || rc2 == 201);
         
         // List refs
-        HttpURLConnection listConn = (HttpURLConnection) new URL(BASE_URL + "/refs").openConnection();
+        HttpURLConnection listConn = (HttpURLConnection) new URL(baseUrl + "/refs").openConnection();
         listConn.setRequestMethod("GET");
         
         assertEquals(200, listConn.getResponseCode());
@@ -301,12 +317,12 @@ public class IntegrationTest {
     @Test
     public void testHeadOperations() throws IOException {
         // Initialize repository
-        HttpURLConnection initConn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         initConn.setRequestMethod("POST");
         assertEquals(201, initConn.getResponseCode());
         
         // Get HEAD (should be symbolic to main)
-        HttpURLConnection getConn = (HttpURLConnection) new URL(BASE_URL + "/HEAD").openConnection();
+        HttpURLConnection getConn = (HttpURLConnection) new URL(baseUrl + "/HEAD").openConnection();
         getConn.setRequestMethod("GET");
         
         assertEquals(200, getConn.getResponseCode());
@@ -315,7 +331,7 @@ public class IntegrationTest {
         
         // Update HEAD to direct hash
         String hash = "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed";
-        HttpURLConnection putConn = (HttpURLConnection) new URL(BASE_URL + "/HEAD").openConnection();
+        HttpURLConnection putConn = (HttpURLConnection) new URL(baseUrl + "/HEAD").openConnection();
         putConn.setRequestMethod("PUT");
         putConn.setDoOutput(true);
         
@@ -326,7 +342,7 @@ public class IntegrationTest {
         assertEquals(200, putConn.getResponseCode());
         
         // Verify HEAD update
-        HttpURLConnection getConn2 = (HttpURLConnection) new URL(BASE_URL + "/HEAD").openConnection();
+        HttpURLConnection getConn2 = (HttpURLConnection) new URL(baseUrl + "/HEAD").openConnection();
         getConn2.setRequestMethod("GET");
         
         assertEquals(200, getConn2.getResponseCode());
@@ -337,12 +353,12 @@ public class IntegrationTest {
     @Test
     public void testStatus() throws IOException {
         // Initialize repository
-        HttpURLConnection initConn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         initConn.setRequestMethod("POST");
         assertEquals(201, initConn.getResponseCode());
         
         // Get status
-        HttpURLConnection statusConn = (HttpURLConnection) new URL(BASE_URL + "/status").openConnection();
+        HttpURLConnection statusConn = (HttpURLConnection) new URL(baseUrl + "/status").openConnection();
         statusConn.setRequestMethod("GET");
         
         assertEquals(200, statusConn.getResponseCode());
@@ -356,7 +372,7 @@ public class IntegrationTest {
     
     @Test
     public void testInvalidEndpoint() throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + "/invalid").openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/invalid").openConnection();
         conn.setRequestMethod("GET");
         
         assertEquals(404, conn.getResponseCode());
@@ -367,7 +383,7 @@ public class IntegrationTest {
     
     @Test
     public void testInvalidMethod() throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(BASE_URL + "/init").openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         conn.setRequestMethod("GET");
         
         assertEquals(405, conn.getResponseCode());

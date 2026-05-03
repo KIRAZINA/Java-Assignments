@@ -259,7 +259,9 @@ public class RefManager {
             if (ref.isSymbolic()) {
                 String resolved = resolveRef(ref);
                 if (resolved == null) {
-                    brokenCount++;
+                    if (!ref.getName().equals("HEAD")) {
+                        brokenCount++;
+                    }
                 }
             }
         }
