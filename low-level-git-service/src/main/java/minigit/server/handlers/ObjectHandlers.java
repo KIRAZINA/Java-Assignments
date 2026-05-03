@@ -39,8 +39,18 @@ public class ObjectHandlers {
         }
         
         try {
-            // Store the raw object bytes
-            String hash = repository.getObjectStore().storeRaw(request.getBody());
+            // First, try to parse as Git object (for raw Git object bytes)
+            // If that fails, create a new BLOB from the raw content
+            minigit.model.GitObject gitObject;
+            try {
+                gitObject = minigit.model.GitObject.parse(request.getBody());
+            } catch (IllegalArgumentException e) {
+                // Not a valid Git object, create a blob
+                gitObject = new minigit.model.GitObject(minigit.model.ObjectType.BLOB, request.getBody());
+            }
+            
+            repository.getObjectStore().store(gitObject);
+            String hash = gitObject.getHash();
             
             // Return 201 Created with Location header
             return Response.created("/objects/" + hash, "Object stored with hash: " + hash);
@@ -50,7 +60,7 @@ public class ObjectHandlers {
     }
     
     /**
-     * Handles GET /objects/{hash} - retrieves a Git object.
+     * Handles GET /objects/{hash} - retrieves a Git object's content.
      * 
      * @param request the HTTP request
      * @return HTTP response
@@ -60,16 +70,16 @@ public class ObjectHandlers {
         String hash = extractHashFromPath(path);
         
         if (hash == null || !Sha1Hasher.isValidHash(hash)) {
-            return Response.badRequest("Invalid object hash");
+            return Response.notFound("Object not found: " + hash);
         }
         
         try {
-            byte[] objectData = repository.getObjectStore().getRawBytes(hash);
-            if (objectData == null) {
+            minigit.model.GitObject gitObject = repository.getObjectStore().retrieve(hash);
+            if (gitObject == null) {
                 return Response.notFound("Object not found: " + hash);
             }
             
-            return Response.ok("application/octet-stream", objectData);
+            return Response.ok("application/octet-stream", gitObject.getContent());
         } catch (Exception e) {
             return Response.internalServerError("Failed to retrieve object: " + e.getMessage());
         }
@@ -86,7 +96,7 @@ public class ObjectHandlers {
         String hash = extractHashFromPath(path);
         
         if (hash == null || !Sha1Hasher.isValidHash(hash)) {
-            return Response.badRequest("Invalid object hash");
+            return Response.notFound("Object not found: " + hash);
         }
         
         try {

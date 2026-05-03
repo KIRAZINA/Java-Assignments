@@ -105,18 +105,23 @@ public class Router {
             path = path.substring(0, queryIndex);
         }
         
+        boolean pathMatched = false;
+        
         for (Route route : routes) {
-            if (!route.method.equals(method) && !route.method.equals("*")) {
-                continue;
-            }
-            
             if (matchesPath(route.pathPattern, path)) {
-                try {
-                    return route.handler.handle(request);
-                } catch (Exception e) {
-                    return Response.internalServerError("Internal server error: " + e.getMessage());
+                pathMatched = true;
+                if (route.method.equals(method) || route.method.equals("*")) {
+                    try {
+                        return route.handler.handle(request);
+                    } catch (Exception e) {
+                        return Response.internalServerError("Internal server error: " + e.getMessage());
+                    }
                 }
             }
+        }
+        
+        if (pathMatched) {
+            return Response.methodNotAllowed();
         }
         
         return null; // No route matched
@@ -125,12 +130,21 @@ public class Router {
     /**
      * Checks if a path pattern matches the actual path.
      * Supports simple parameter matching with {param} placeholders.
+     * Special handling for /refs/{name} to allow names with slashes.
      * 
      * @param pattern the path pattern
      * @param path the actual path
      * @return true if matches, false otherwise
      */
     private boolean matchesPath(String pattern, String path) {
+        // Special case for /refs/{name} and /objects/{hash} patterns
+        if (pattern.equals("/refs/{name}") && path.startsWith("/refs/")) {
+            return true;
+        }
+        if (pattern.equals("/objects/{hash}") && path.startsWith("/objects/")) {
+            return true;
+        }
+        
         if (!pattern.contains("{")) {
             // Simple exact match
             return pattern.equals(path) || 
@@ -138,7 +152,7 @@ public class Router {
                    (path.endsWith("/") && path.substring(0, path.length() - 1).equals(pattern));
         }
         
-        // Parameterized matching
+        // Parameterized matching for other patterns
         String[] patternParts = pattern.split("/");
         String[] pathParts = path.split("/");
         
@@ -163,12 +177,20 @@ public class Router {
     
     /**
      * Extracts path parameters from a matching path.
+     * Special handling for /refs/{name} to capture names with slashes.
      * 
      * @param pattern the path pattern with {param} placeholders
      * @param path the actual path
      * @return array of parameter values, or empty array if no parameters
      */
     public String[] extractParameters(String pattern, String path) {
+        if (pattern.equals("/refs/{name}") && path.startsWith("/refs/")) {
+            return new String[]{path.substring("/refs/".length())};
+        }
+        if (pattern.equals("/objects/{hash}") && path.startsWith("/objects/")) {
+            return new String[]{path.substring("/objects/".length())};
+        }
+        
         if (!pattern.contains("{")) {
             return new String[0];
         }

@@ -85,6 +85,9 @@ public class ObjectStore {
      * @return true if the object exists, false otherwise
      */
     public boolean exists(String hash) {
+        if (!Sha1Hasher.isValidHash(hash)) {
+            return false;
+        }
         return PathUtils.getObjectPath(gitRoot, hash).toFile().exists();
     }
     
@@ -117,6 +120,10 @@ public class ObjectStore {
      * @throws RuntimeException if reading fails
      */
     public byte[] getRawBytes(String hash) {
+        if (!Sha1Hasher.isValidHash(hash)) {
+            return null;
+        }
+        
         Path objectPath = PathUtils.getObjectPath(gitRoot, hash);
         
         if (!Files.exists(objectPath)) {

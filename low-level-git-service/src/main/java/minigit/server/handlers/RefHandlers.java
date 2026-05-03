@@ -100,11 +100,12 @@ public class RefHandlers {
             boolean isSymbolic = body.startsWith("ref: ");
             String target = isSymbolic ? body.substring(5) : body;
             
+            // Check if the ref existed BEFORE storing
+            boolean existed = repository.getRefManager().getRef(refName) != null;
+            
             Ref ref = new Ref(refName, target, isSymbolic);
             repository.getRefManager().storeRef(ref);
             
-            // Check if this was a creation or update
-            boolean existed = repository.getRefManager().getRef(refName) != null;
             int statusCode = existed ? Response.OK : Response.CREATED;
             
             return new Response(statusCode, "text/plain", "Reference updated: " + refName);

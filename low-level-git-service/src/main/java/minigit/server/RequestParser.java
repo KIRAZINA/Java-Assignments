@@ -166,7 +166,8 @@ public class RequestParser {
             // Zero chunk size indicates end of message
             if (chunkSize == 0) {
                 // Read trailing headers (ignored in this implementation)
-                while ((readLine(inputStream)) != null && !readLine(inputStream).isEmpty()) {
+                String line;
+                while ((line = readLine(inputStream)) != null && !line.isEmpty()) {
                     // Skip trailing headers
                 }
                 break;

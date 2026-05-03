@@ -1,13 +1,13 @@
 package minigit.core;
 
-import minigit.model.Ref;
-import minigit.util.PathUtils;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+
+import minigit.model.Ref;
+import minigit.util.PathUtils;
 
 /**
  * Manages Git references (refs) including HEAD and branch references.
@@ -37,30 +37,32 @@ public class RefManager {
      * @throws RuntimeException if storage fails
      */
     public void storeRef(Ref ref) {
-        if (!PathUtils.isValidRefName(ref.getName())) {
+        String normalizedName = normalizeRefName(ref.getName());
+        if (!PathUtils.isValidRefName(normalizedName)) {
             throw new IllegalArgumentException("Invalid ref name: " + ref.getName());
         }
         
-        Path refPath = PathUtils.getRefPath(gitRoot, ref.getName());
+        Path refPath = PathUtils.getRefPath(gitRoot, normalizedName);
         PathUtils.ensureParentExists(refPath);
         
         try {
             String content = ref.serialize();
             Files.write(refPath, content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         } catch (IOException e) {
-            throw new RuntimeException("Failed to store ref: " + ref.getName(), e);
+            throw new RuntimeException("Failed to store ref: " + normalizedName, e);
         }
     }
     
     /**
      * Retrieves a reference by name.
      * 
-     * @param name the reference name (e.g., "heads/main" or "HEAD")
+     * @param name the reference name (e.g., "heads/main", "refs/heads/main", or "HEAD")
      * @return the Ref object, or null if not found
      * @throws RuntimeException if retrieval fails
      */
     public Ref getRef(String name) {
-        Path refPath = PathUtils.getRefPath(gitRoot, name);
+        String normalizedName = normalizeRefName(name);
+        Path refPath = PathUtils.getRefPath(gitRoot, normalizedName);
         
         if (!Files.exists(refPath)) {
             return null;
@@ -69,10 +71,26 @@ public class RefManager {
         try {
             String content = Files.readString(refPath, java.nio.charset.StandardCharsets.UTF_8);
             content = content.trim();
-            return Ref.parse(name, content);
+            return Ref.parse(normalizedName, content);
         } catch (IOException e) {
             throw new RuntimeException("Failed to read ref: " + name, e);
         }
+    }
+    
+    /**
+     * Normalizes a reference name by removing "refs/" prefix if present.
+     * 
+     * @param name the reference name
+     * @return normalized reference name
+     */
+    private String normalizeRefName(String name) {
+        if (name == null) {
+            return null;
+        }
+        if (name.startsWith("refs/")) {
+            return name.substring("refs/".length());
+        }
+        return name;
     }
     
     /**
@@ -87,12 +105,13 @@ public class RefManager {
             throw new IllegalArgumentException("Cannot delete HEAD reference");
         }
         
-        Path refPath = PathUtils.getRefPath(gitRoot, name);
+        String normalizedName = normalizeRefName(name);
+        Path refPath = PathUtils.getRefPath(gitRoot, normalizedName);
         
         try {
             return Files.deleteIfExists(refPath);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to delete ref: " + name, e);
+            throw new RuntimeException("Failed to delete ref: " + normalizedName, e);
         }
     }
     
