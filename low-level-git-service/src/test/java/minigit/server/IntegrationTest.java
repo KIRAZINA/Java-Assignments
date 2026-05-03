@@ -130,13 +130,20 @@ public class IntegrationTest {
         conn1.setRequestMethod("POST");
         assertEquals(201, conn1.getResponseCode());
         
-        // Try to initialize again
+        // Try to initialize again — fix #18: should be 409 Conflict, not 400
         HttpURLConnection conn2 = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
         conn2.setRequestMethod("POST");
-        assertEquals(400, conn2.getResponseCode());
+        assertEquals(409, conn2.getResponseCode());
         
         String response = readErrorResponse(conn2);
         assertTrue(response.contains("Repository already initialized"));
+        
+        // Fix §4.4: Verify repository is still fully functional after 409 Conflict
+        HttpURLConnection statusConn = (HttpURLConnection) new URL(baseUrl + "/status").openConnection();
+        statusConn.setRequestMethod("GET");
+        assertEquals(200, statusConn.getResponseCode());
+        String statusResponse = readResponse(statusConn);
+        assertTrue(statusResponse.contains("Initialized: Yes"));
     }
     
     @Test
@@ -178,7 +185,26 @@ public class IntegrationTest {
     
     @Test
     public void testRetrieveNonExistentObject() throws IOException {
+        // Fix #6: invalid (non-40-hex) hash → 400 Bad Request
         HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/objects/nonexistent").openConnection();
+        conn.setRequestMethod("GET");
+        
+        assertEquals(400, conn.getResponseCode());
+        
+        String response = readErrorResponse(conn);
+        assertTrue(response.contains("Invalid object hash"));
+    }
+    
+    @Test
+    public void testRetrieveValidHashButMissingObject() throws IOException {
+        // Initialize repository so the store exists
+        HttpURLConnection initConn = (HttpURLConnection) new URL(baseUrl + "/init").openConnection();
+        initConn.setRequestMethod("POST");
+        assertEquals(201, initConn.getResponseCode());
+        
+        // A valid 40-hex hash that was never stored → 404 Not Found
+        String validHash = "0000000000000000000000000000000000000000";
+        HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/objects/" + validHash).openConnection();
         conn.setRequestMethod("GET");
         
         assertEquals(404, conn.getResponseCode());
@@ -212,11 +238,11 @@ public class IntegrationTest {
         
         assertEquals(200, headConn.getResponseCode());
         
-        // HEAD request for non-existent object
+        // HEAD request for non-existent / invalid hash → fix #6: 400 Bad Request
         HttpURLConnection headConn2 = (HttpURLConnection) new URL(baseUrl + "/objects/nonexistent").openConnection();
         headConn2.setRequestMethod("HEAD");
         
-        assertEquals(404, headConn2.getResponseCode());
+        assertEquals(400, headConn2.getResponseCode());
     }
     
     @Test
@@ -387,6 +413,26 @@ public class IntegrationTest {
         conn.setRequestMethod("GET");
         
         assertEquals(405, conn.getResponseCode());
+    }
+    
+    @Test
+    public void testGracefulShutdown() throws Exception {
+        // Fix §4.5: verify the server stops and unbinds the port
+        server.stop();
+        
+        // Wait a bit for the thread pool to drain and socket to close
+        Thread.sleep(200);
+        
+        // Ensure another request fails (port should be closed)
+        org.junit.jupiter.api.Assertions.assertThrows(
+            java.net.ConnectException.class,
+            () -> {
+                HttpURLConnection conn = (HttpURLConnection) new URL(baseUrl + "/").openConnection();
+                conn.setConnectTimeout(200);
+                conn.setRequestMethod("GET");
+                conn.getResponseCode();
+            }
+        );
     }
     
     private String readResponse(HttpURLConnection conn) throws IOException {

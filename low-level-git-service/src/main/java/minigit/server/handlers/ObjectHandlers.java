@@ -1,6 +1,9 @@
 package minigit.server.handlers;
 
+import minigit.core.HashCollisionException;
 import minigit.core.Repository;
+import minigit.model.GitObject;
+import minigit.model.ObjectType;
 import minigit.server.Request;
 import minigit.server.Response;
 import minigit.util.Sha1Hasher;
@@ -33,27 +36,25 @@ public class ObjectHandlers {
             return Response.badRequest("Request body is required");
         }
         
-        // Check content size limit (10MB as per spec)
+        // Check content size limit (10 MB as per spec)
         if (request.getContentLength() > 10 * 1024 * 1024) {
             return Response.badRequest("Object too large (max 10MB)");
         }
         
         try {
-            // First, try to parse as Git object (for raw Git object bytes)
-            // If that fails, create a new BLOB from the raw content
-            minigit.model.GitObject gitObject;
-            try {
-                gitObject = minigit.model.GitObject.parse(request.getBody());
-            } catch (IllegalArgumentException e) {
-                // Not a valid Git object, create a blob
-                gitObject = new minigit.model.GitObject(minigit.model.ObjectType.BLOB, request.getBody());
-            }
+            // Fix #13: PUT /objects always creates a BLOB.
+            // Clients that need a commit or tree must format the object header themselves
+            // and PUT the raw bytes, or use the dedicated POST /commit endpoint.
+            GitObject gitObject = new GitObject(ObjectType.BLOB, request.getBody());
             
             repository.getObjectStore().store(gitObject);
             String hash = gitObject.getHash();
             
             // Return 201 Created with Location header
             return Response.created("/objects/" + hash, "Object stored with hash: " + hash);
+        } catch (HashCollisionException e) {
+            // Fix #9: SHA-1 collision → 409 Conflict
+            return Response.conflict("Hash collision: " + e.getMessage());
         } catch (Exception e) {
             return Response.internalServerError("Failed to store object: " + e.getMessage());
         }
@@ -69,16 +70,21 @@ public class ObjectHandlers {
         String path = request.getPath();
         String hash = extractHashFromPath(path);
         
-        if (hash == null || !Sha1Hasher.isValidHash(hash)) {
-            return Response.notFound("Object not found: " + hash);
+        // Fix #6: invalid hash format → 400 Bad Request, not 404
+        if (hash == null) {
+            return Response.badRequest("Missing object hash in path");
+        }
+        if (!Sha1Hasher.isValidHash(hash)) {
+            return Response.badRequest("Invalid object hash (must be 40 hex characters): " + hash);
         }
         
         try {
-            minigit.model.GitObject gitObject = repository.getObjectStore().retrieve(hash);
+            GitObject gitObject = repository.getObjectStore().retrieve(hash);
             if (gitObject == null) {
                 return Response.notFound("Object not found: " + hash);
             }
             
+            // Fix #4: binary objects must use application/octet-stream
             return Response.ok("application/octet-stream", gitObject.getContent());
         } catch (Exception e) {
             return Response.internalServerError("Failed to retrieve object: " + e.getMessage());
@@ -95,8 +101,12 @@ public class ObjectHandlers {
         String path = request.getPath();
         String hash = extractHashFromPath(path);
         
-        if (hash == null || !Sha1Hasher.isValidHash(hash)) {
-            return Response.notFound("Object not found: " + hash);
+        // Fix #6: invalid hash format → 400 Bad Request, not 404
+        if (hash == null) {
+            return Response.badRequest("Missing object hash in path");
+        }
+        if (!Sha1Hasher.isValidHash(hash)) {
+            return Response.badRequest("Invalid object hash (must be 40 hex characters): " + hash);
         }
         
         try {

@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import minigit.model.Ref;
 import minigit.util.PathUtils;
@@ -194,7 +196,7 @@ public class RefManager {
             return null;
         }
         
-        return resolveRef(ref);
+        return resolveRef(ref, new HashSet<>());
     }
     
     /**
@@ -204,8 +206,25 @@ public class RefManager {
      * @return the final commit hash, or null if chain is broken
      */
     public String resolveRef(Ref ref) {
+        return resolveRef(ref, new HashSet<>());
+    }
+    
+    /**
+     * Internal resolver that tracks visited ref names to detect cycles.
+     * Fix #8: prevents StackOverflowError caused by circular symbolic references.
+     * 
+     * @param ref     the reference to resolve
+     * @param visited set of already-visited ref names in this chain
+     * @return the final commit hash, or null if chain is broken or cyclic
+     */
+    private String resolveRef(Ref ref, Set<String> visited) {
         if (ref.isDirect()) {
             return ref.getTarget();
+        }
+        
+        // Detect cycle: if we have already visited this ref name, bail out
+        if (!visited.add(ref.getName())) {
+            return null; // Circular reference detected
         }
         
         // Follow symbolic reference
@@ -214,12 +233,7 @@ public class RefManager {
             return null; // Broken symbolic reference
         }
         
-        // Prevent infinite loops
-        if (targetRef.getName().equals(ref.getName())) {
-            return null; // Circular reference
-        }
-        
-        return resolveRef(targetRef);
+        return resolveRef(targetRef, visited);
     }
     
     /**

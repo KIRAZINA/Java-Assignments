@@ -29,13 +29,17 @@ public class RepositoryHandlers {
      */
     public Response handleInit(Request request) {
         try {
-            if (repository.isRepository()) {
-                return Response.badRequest("Repository already initialized");
+            // Fix §3.2: synchronize the check-and-create to avoid race conditions
+            synchronized (repository) {
+                // Fix #18: repeated POST /init → 409 Conflict (resource already exists)
+                if (repository.isRepository()) {
+                    return Response.conflict("Repository already initialized");
+                }
+                
+                repository.initialize();
             }
             
-            repository.initialize();
-            
-            return Response.created("/init", "Repository initialized successfully");
+            return Response.created("/", "Repository initialized successfully");
         } catch (Exception e) {
             return Response.internalServerError("Failed to initialize repository: " + e.getMessage());
         }

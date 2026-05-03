@@ -19,16 +19,25 @@ public class ResponseWriter {
      */
     public static void write(Response response, OutputStream outputStream) throws IOException {
         // Write status line
-        String statusLine = String.format("HTTP/1.1 %d %s\r\n", 
-                                         response.getStatusCode(), 
+        String statusLine = String.format("HTTP/1.1 %d %s\r\n",
+                                         response.getStatusCode(),
                                          response.getStatusText());
         outputStream.write(statusLine.getBytes(StandardCharsets.UTF_8));
         
-        // Write headers
+        // Write all headers that the Response object already carries
         for (String headerName : response.getHeaders().keySet()) {
             String headerValue = response.getHeader(headerName);
             String headerLine = String.format("%s: %s\r\n", headerName, headerValue);
             outputStream.write(headerLine.getBytes(StandardCharsets.UTF_8));
+        }
+        
+        // Fix #14: always include Content-Length so HTTP/1.1 keep-alive clients know
+        // when the body ends. Response constructors set it for string/byte bodies;
+        // we only add it here when it was omitted (e.g. status-only responses).
+        if (response.getHeader("content-length") == null) {
+            int bodyLength = response.hasBody() ? response.getBody().length : 0;
+            String clHeader = String.format("Content-Length: %d\r\n", bodyLength);
+            outputStream.write(clHeader.getBytes(StandardCharsets.UTF_8));
         }
         
         // Add Date header if not present
@@ -38,10 +47,9 @@ public class ResponseWriter {
         }
         
         // Add Server header
-        String serverHeader = "Server: Mini-Git/1.0\r\n";
-        outputStream.write(serverHeader.getBytes(StandardCharsets.UTF_8));
+        outputStream.write("Server: Mini-Git/1.0\r\n".getBytes(StandardCharsets.UTF_8));
         
-        // End of headers
+        // Blank line — end of headers
         outputStream.write("\r\n".getBytes(StandardCharsets.UTF_8));
         
         // Write body if present

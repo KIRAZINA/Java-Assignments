@@ -21,6 +21,7 @@ public class Response {
     public static final int BAD_REQUEST = 400;
     public static final int NOT_FOUND = 404;
     public static final int METHOD_NOT_ALLOWED = 405;
+    public static final int CONFLICT = 409;
     public static final int INTERNAL_SERVER_ERROR = 500;
     
     // Status text mappings
@@ -32,6 +33,7 @@ public class Response {
         STATUS_TEXTS.put(BAD_REQUEST, "Bad Request");
         STATUS_TEXTS.put(NOT_FOUND, "Not Found");
         STATUS_TEXTS.put(METHOD_NOT_ALLOWED, "Method Not Allowed");
+        STATUS_TEXTS.put(CONFLICT, "Conflict");
         STATUS_TEXTS.put(INTERNAL_SERVER_ERROR, "Internal Server Error");
     }
     
@@ -311,6 +313,17 @@ public class Response {
      */
     public static Response methodNotAllowed() {
         return new Response(METHOD_NOT_ALLOWED, "text/plain", "Method Not Allowed");
+    }
+    
+    /**
+     * Creates a 409 Conflict response.
+     * Used when a hash collision is detected during object storage.
+     * 
+     * @param body the error message
+     * @return Response object
+     */
+    public static Response conflict(String body) {
+        return new Response(CONFLICT, "text/plain", body);
     }
     
     /**

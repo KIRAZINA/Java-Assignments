@@ -38,7 +38,7 @@ public class Repository {
      * 
      * @throws RuntimeException if initialization fails
      */
-    public void initialize() {
+    public synchronized void initialize() {
         // Create .mini-git directory
         Path miniGitDir = gitRoot.resolve(".mini-git");
         PathUtils.ensureDirectoryExists(miniGitDir);

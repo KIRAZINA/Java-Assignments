@@ -236,4 +236,30 @@ public class ObjectStoreTest {
         assertEquals(1, store.getObjectCount());
         assertTrue(store.exists(object1.getHash()));
     }
+    
+    /**
+     * Verifies that storing a different object that occupies the path of an already-stored
+     * object (simulated by writing a tampered file) raises HashCollisionException.
+     */
+    @Test
+    public void testHashCollisionThrows() throws Exception {
+        ObjectStore store = new ObjectStore(tempDir);
+        store.initialize();
+        
+        byte[] content = "collision content".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        GitObject original = new GitObject(ObjectType.BLOB, content);
+        store.store(original);
+        
+        // Tamper: overwrite the stored file with different serialized bytes so
+        // the next store() call finds the path occupied but with different data.
+        java.nio.file.Path objectPath = minigit.util.PathUtils.getObjectPath(tempDir, original.getHash());
+        byte[] tampered = "blob 3\0abc".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        java.nio.file.Files.write(objectPath, tampered);
+        
+        // Trying to store the original object again should detect the mismatch.
+        org.junit.jupiter.api.Assertions.assertThrows(
+            HashCollisionException.class,
+            () -> store.store(original)
+        );
+    }
 }

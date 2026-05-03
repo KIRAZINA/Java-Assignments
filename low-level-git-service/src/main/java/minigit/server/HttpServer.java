@@ -5,7 +5,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.file.Paths;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import minigit.core.Repository;
 import minigit.server.handlers.ObjectHandlers;
@@ -23,6 +29,15 @@ public class HttpServer {
     private final Router router;
     private volatile boolean running = false;
     private ServerSocket serverSocket;
+    /** Fix #15: bounded thread pool prevents OOM under load. */
+    private ExecutorService threadPool;
+    /** Fix §1.9: tracks open client sockets so stop() can close them immediately,
+     *  unblocking threads stuck in socket.read() which ignore Thread.interrupt(). */
+    private final Set<Socket> activeConnections = ConcurrentHashMap.newKeySet();
+    /** Max concurrent connections. Tune as needed. */
+    private static final int MAX_THREADS = 50;
+    /** Accept-loop timeout (ms). Allows graceful shutdown without kill -9. Fix #20. */
+    private static final int ACCEPT_TIMEOUT_MS = 1000;
     
     /**
      * Creates an HttpServer on the specified port.
@@ -78,9 +93,13 @@ public class HttpServer {
         }
         
         serverSocket = new ServerSocket(port);
+        // Fix #20: timeout lets the accept() call unblock so `running` can be checked.
+        serverSocket.setSoTimeout(ACCEPT_TIMEOUT_MS);
         if (port == 0) {
             this.port = serverSocket.getLocalPort();
         }
+        // Fix #15: fixed-size thread pool prevents unbounded thread creation.
+        threadPool = Executors.newFixedThreadPool(MAX_THREADS);
         running = true;
         System.out.println("Mini-Git HTTP Server started on port " + port);
         System.out.println("Repository: " + repository.getGitRoot());
@@ -92,7 +111,10 @@ public class HttpServer {
         while (running) {
             try {
                 Socket clientSocket = serverSocket.accept();
-                handleConnection(clientSocket);
+                // Each connection is handled by a thread from the bounded pool.
+                threadPool.submit(() -> handleConnection(clientSocket));
+            } catch (SocketTimeoutException e) {
+                // Expected: accept() timed out. Check `running` flag and loop again.
             } catch (IOException e) {
                 if (running) {
                     System.err.println("Error accepting connection: " + e.getMessage());
@@ -107,6 +129,8 @@ public class HttpServer {
      * @param clientSocket the client socket
      */
     private void handleConnection(Socket clientSocket) {
+        // Fix §1.9: register socket so stop() can close it if needed.
+        activeConnections.add(clientSocket);
         try (InputStream inputStream = clientSocket.getInputStream();
              OutputStream outputStream = clientSocket.getOutputStream()) {
             
@@ -141,6 +165,7 @@ public class HttpServer {
             }
             System.err.println("Error handling request: " + e.getMessage());
         } finally {
+            activeConnections.remove(clientSocket);
             try {
                 clientSocket.close();
             } catch (IOException e) {
@@ -154,11 +179,28 @@ public class HttpServer {
      */
     public void stop() {
         running = false;
+        // Fix §1.9: close all active client sockets immediately to unblock
+        // threads stuck in socket.read() (which ignores Thread.interrupt()).
+        for (Socket s : activeConnections) {
+            try { s.close(); } catch (IOException ignored) {}
+        }
         if (serverSocket != null && !serverSocket.isClosed()) {
             try {
                 serverSocket.close();
             } catch (IOException e) {
                 System.err.println("Error closing server socket: " + e.getMessage());
+            }
+        }
+        // Fix #15/#20: gracefully drain the thread pool.
+        if (threadPool != null) {
+            threadPool.shutdown();
+            try {
+                if (!threadPool.awaitTermination(10, TimeUnit.SECONDS)) {
+                    threadPool.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                threadPool.shutdownNow();
+                Thread.currentThread().interrupt();
             }
         }
         System.out.println("Server stopped");

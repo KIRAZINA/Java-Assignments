@@ -96,19 +96,26 @@ public class RefHandlers {
         }
         
         try {
-            // Check if this is a symbolic reference or direct reference
             boolean isSymbolic = body.startsWith("ref: ");
-            String target = isSymbolic ? body.substring(5) : body;
+            
+            // Fix #8 (partial): only HEAD may be a symbolic ref.
+            // Regular refs (heads/*, tags/*) must point directly to a commit hash.
+            if (isSymbolic) {
+                return Response.badRequest(
+                    "Symbolic references are not allowed in /refs/{name}. "
+                    + "Use PUT /HEAD to create symbolic refs.");
+            }
             
             // Check if the ref existed BEFORE storing
             boolean existed = repository.getRefManager().getRef(refName) != null;
             
-            Ref ref = new Ref(refName, target, isSymbolic);
+            Ref ref = Ref.direct(refName, body);
             repository.getRefManager().storeRef(ref);
             
             int statusCode = existed ? Response.OK : Response.CREATED;
-            
             return new Response(statusCode, "text/plain", "Reference updated: " + refName);
+        } catch (IllegalArgumentException e) {
+            return Response.badRequest("Invalid reference value: " + e.getMessage());
         } catch (Exception e) {
             return Response.internalServerError("Failed to update ref: " + e.getMessage());
         }

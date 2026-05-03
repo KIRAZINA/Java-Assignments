@@ -220,6 +220,42 @@ public class RefManagerTest {
         assertNull(resolved);
     }
     
+    /**
+     * Fix #8: circular symbolic refs must not cause StackOverflowError.
+     * resolveRef() must return null when a cycle is detected.
+     */
+    @Test
+    public void testCircularRefReturnsNullWithoutStackOverflow() {
+        RefManager refManager = new RefManager(tempDir);
+        refManager.initialize();
+        
+        // Create A → B → A circular chain using the internal store directly
+        // (RefManager only exposes storeRef, so we store symbolic refs via that)
+        Ref refA = Ref.symbolic("heads/a", "refs/heads/b");
+        Ref refB = Ref.symbolic("heads/b", "refs/heads/a");
+        refManager.storeRef(refA);
+        refManager.storeRef(refB);
+        
+        // Must not throw StackOverflowError; must return null
+        String resolved = refManager.resolveRef("heads/a");
+        assertNull(resolved);
+    }
+    
+    /**
+     * Fix §4.2: self-referencing symbolic refs (A → A) must not cause StackOverflowError.
+     */
+    @Test
+    public void testSelfReferencingRef() {
+        RefManager refManager = new RefManager(tempDir);
+        refManager.initialize();
+        
+        Ref selfRef = Ref.symbolic("heads/self", "refs/heads/self");
+        refManager.storeRef(selfRef);
+        
+        // Must not throw StackOverflowError; must return null
+        assertNull(refManager.resolveRef("heads/self"));
+    }
+    
     @Test
     public void testGetCurrentCommit() {
         RefManager refManager = new RefManager(tempDir);
