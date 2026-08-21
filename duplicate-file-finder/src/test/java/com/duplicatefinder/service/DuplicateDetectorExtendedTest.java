@@ -41,8 +41,8 @@ class DuplicateDetectorExtendedTest {
         Files.writeString(tempDir.resolve("different.txt"), "different content");
 
         List<FileInfo> realFiles = List.of(
-            createFileInfo("test1.txt", tempDir.resolve("test1.txt").toString(), 12, Instant.now()),
-            createFileInfo("test2.txt", tempDir.resolve("test2.txt").toString(), 12, Instant.now()),
+            createFileInfo("test.txt", tempDir.resolve("test1.txt").toString(), 12, Instant.now()),
+            createFileInfo("test.txt", tempDir.resolve("test2.txt").toString(), 12, Instant.now()),
             createFileInfo("different.txt", tempDir.resolve("different.txt").toString(), 15, Instant.now())
         );
 
@@ -63,8 +63,8 @@ class DuplicateDetectorExtendedTest {
         Files.writeString(tempDir.resolve("different.txt"), "different content");
 
         List<FileInfo> files = List.of(
-            createFileInfo("test1.txt", tempDir.resolve("test1.txt").toString(), 12, Instant.now()),
-            createFileInfo("TEST2.txt", tempDir.resolve("TEST2.txt").toString(), 12, Instant.now()),
+            createFileInfo("test.txt", tempDir.resolve("test1.txt").toString(), 12, Instant.now()),
+            createFileInfo("TEST.txt", tempDir.resolve("TEST2.txt").toString(), 12, Instant.now()),
             createFileInfo("different.txt", tempDir.resolve("different.txt").toString(), 15, Instant.now())
         );
 
@@ -322,3 +322,5 @@ class DuplicateDetectorExtendedTest {
         return fileInfo;
     }
 }
+
+

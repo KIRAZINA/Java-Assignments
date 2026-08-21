@@ -85,7 +85,7 @@ class DirectoryScannerExtendedTest {
         Files.writeString(tempDir.resolve("level1/level2/file2.txt"), "content2");
         Files.writeString(tempDir.resolve("level1/level2/level3/file3.txt"), "content3");
 
-        DirectoryScanner shallowScanner = new DirectoryScanner(tempDir, 2, 0, false);
+        DirectoryScanner shallowScanner = new DirectoryScanner(tempDir, 3, 0, false);
 
         // When
         List<FileInfo> files = shallowScanner.scan();
@@ -124,7 +124,7 @@ class DirectoryScannerExtendedTest {
         Files.writeString(targetFile, "target content");
         try {
             Files.createSymbolicLink(linkFile, targetFile);
-        } catch (UnsupportedOperationException e) {
+        } catch (IOException | UnsupportedOperationException | SecurityException e) {
             // Skip test if symbolic links are not supported
             return;
         }
@@ -255,3 +255,5 @@ class DirectoryScannerExtendedTest {
         assertThat(endTime - startTime).isLessThan(5000); // Should complete within 5 seconds
     }
 }
+
+

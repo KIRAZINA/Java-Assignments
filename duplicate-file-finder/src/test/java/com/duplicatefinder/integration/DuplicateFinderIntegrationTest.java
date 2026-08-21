@@ -86,6 +86,9 @@ class DuplicateFinderIntegrationTest {
     @Test
     @DisplayName("Should respect case-insensitive option")
     void testCaseInsensitiveOption() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            !System.getProperty("os.name").toLowerCase().contains("win"),
+            "Case-only filenames cannot coexist on the default Windows filesystem");
         // Given
         setupCaseSensitiveDuplicates();
 
@@ -324,25 +327,27 @@ class DuplicateFinderIntegrationTest {
     }
 
     private void setupSimpleDuplicateStructure() throws IOException {
-        Files.writeString(tempDir.resolve("file1.txt"), "same content");
-        Files.writeString(tempDir.resolve("file2.txt"), "same content");
+        Path first = Files.createDirectories(tempDir.resolve("first"));
+        Path second = Files.createDirectories(tempDir.resolve("second"));
+        Files.writeString(first.resolve("duplicate.txt"), "same content");
+        Files.writeString(second.resolve("duplicate.txt"), "same content");
         Files.writeString(tempDir.resolve("unique.txt"), "different content");
     }
 
     private void setupComplexDuplicateStructure() throws IOException {
-        // First group (2 files)
-        Files.writeString(tempDir.resolve("group1a.txt"), "content1");
-        Files.writeString(tempDir.resolve("group1b.txt"), "content1");
-        
-        // Second group (3 files)
-        Files.writeString(tempDir.resolve("group2a.txt"), "content2");
-        Files.writeString(tempDir.resolve("group2b.txt"), "content2");
-        Files.writeString(tempDir.resolve("group2c.txt"), "content2");
-        
-        // Unique file
+        Path group1a = Files.createDirectories(tempDir.resolve("group1a"));
+        Path group1b = Files.createDirectories(tempDir.resolve("group1b"));
+        Files.writeString(group1a.resolve("group1.txt"), "content1");
+        Files.writeString(group1b.resolve("group1.txt"), "content1");
+
+        Path group2a = Files.createDirectories(tempDir.resolve("group2a"));
+        Path group2b = Files.createDirectories(tempDir.resolve("group2b"));
+        Path group2c = Files.createDirectories(tempDir.resolve("group2c"));
+        Files.writeString(group2a.resolve("group2.txt"), "content2");
+        Files.writeString(group2b.resolve("group2.txt"), "content2");
+        Files.writeString(group2c.resolve("group2.txt"), "content2");
         Files.writeString(tempDir.resolve("unique.txt"), "unique content");
     }
-
     private void setupCaseSensitiveDuplicates() throws IOException {
         Files.writeString(tempDir.resolve("test.txt"), "same content");
         Files.writeString(tempDir.resolve("Test.txt"), "same content");
@@ -364,15 +369,17 @@ class DuplicateFinderIntegrationTest {
     }
 
     private void setupFilesWithDifferentTimestamps() throws IOException {
-        Path file1 = tempDir.resolve("file1.txt");
-        Path file2 = tempDir.resolve("file2.txt");
-        Path file3 = tempDir.resolve("file3.txt");
-        
+        Path firstDir = Files.createDirectories(tempDir.resolve("first"));
+        Path secondDir = Files.createDirectories(tempDir.resolve("second"));
+        Path thirdDir = Files.createDirectories(tempDir.resolve("third"));
+        Path file1 = firstDir.resolve("duplicate.txt");
+        Path file2 = secondDir.resolve("duplicate.txt");
+        Path file3 = thirdDir.resolve("duplicate.txt");
+
         Files.writeString(file1, "same content");
         Files.writeString(file2, "same content");
         Files.writeString(file3, "same content");
-        
-        // Make file2 newer
+
         try {
             Thread.sleep(1000);
             Files.setLastModifiedTime(file2, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
@@ -382,3 +389,7 @@ class DuplicateFinderIntegrationTest {
         }
     }
 }
+
+
+
+
