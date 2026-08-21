@@ -1,9 +1,15 @@
 package com.example.collections;
 
+import java.util.Iterator;
+
 /**
  * Simple dynamic collection interface for String elements.
+ *
+ * <p>Extends {@link Iterable<String>} so that instances can be used in
+ * enhanced-for loops and produce a fail-fast {@link Iterator}.</p>
  */
-public interface CollectionList {
+public interface CollectionList extends Iterable<String> {
+
     /**
      * Adds element to the end.
      * @param o element to add
@@ -28,7 +34,27 @@ public interface CollectionList {
     boolean set(int index, String o);
 
     /**
+     * Removes the element at the given index, shifting subsequent elements
+     * left.  The vacated tail slot is nulled to prevent loitering.
+     *
+     * @param index index of the element to remove
+     * @return the removed element, or {@code null} if the index is out of range
+     */
+    String remove(int index);
+
+    /**
+     * Removes the first occurrence of the specified value, shifting subsequent
+     * elements left.  The vacated tail slot is nulled to prevent loitering.
+     *
+     * @param value element to remove (may be {@code null})
+     * @return true if an element was removed
+     */
+    boolean remove(String value);
+
+    /**
      * Deletes first occurrence of the element (including null).
+     * Convenience alias for {@link #remove(String)}.
+     *
      * @param o element to delete
      * @return true if an element was deleted
      */
@@ -49,14 +75,8 @@ public interface CollectionList {
     boolean contains(String o);
 
     /**
-     * Compares content and order with another CollectionList.
-     * @param collection other collection
-     * @return true if equal by elements and order
-     */
-    boolean equals(CollectionList collection);
-
-    /**
-     * Clears logical content (size becomes 0).
+     * Clears logical content (size becomes 0).  All internal slots are
+     * nulled so the GC can reclaim the String objects.
      * @return true
      */
     boolean clear();
@@ -66,4 +86,31 @@ public interface CollectionList {
      * @return size
      */
     int size();
+
+    /**
+     * Ensures the internal backing array can hold at least {@code minCapacity}
+     * elements without triggering an automatic resize on the next add.
+     *
+     * <p>The growth factor is exactly 1.5× (i.e.
+     * {@code newCapacity = oldCapacity + (oldCapacity >> 1)}).</p>
+     *
+     * @param minCapacity the minimum required capacity
+     */
+    void ensureCapacity(int minCapacity);
+
+    /**
+     * Trims the internal backing array to exactly match the current
+     * {@code size()}, releasing any unused capacity.  This is useful after
+     * removing many elements to reduce memory footprint.
+     */
+    void trimToSize();
+
+    /**
+     * Returns a freshly allocated {@code String[]} containing exactly
+     * {@code size()} elements.  The returned array is a copy — modifications
+     * to it do not affect the collection's internal state.
+     *
+     * @return a new array of length {@code size()}
+     */
+    String[] toArray();
 }

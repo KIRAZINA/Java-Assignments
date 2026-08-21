@@ -2,18 +2,39 @@ package bank;
 
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.StampedLock;
 
 /**
  * Represents a bank account with thread-safe balance operations.
  *
- * NOTE:
- * - In the unsafe version, we will remove synchronization to demonstrate race conditions.
- * - In the safe version, we will use synchronized/locks.
+ * <p>The account exposes three independent locking mechanisms:</p>
+ * <ul>
+ *   <li>{@link #getLock()} – a {@link ReentrantLock} used by {@link TransferServiceLock}</li>
+ *   <li>{@link #getStampedLock()} – a {@link StampedLock} used by {@link TransferServiceStampedLock}</li>
+ *   <li>intrinsic monitor – used by {@link TransferServiceSynchronized}</li>
+ * </ul>
+ *
+ * <p>The balance is stored in an {@link AtomicLong} because individual
+ * {@code deposit}/{@code withdraw} operations use CAS loops for atomic
+ * overflow checks.  However, {@code AtomicLong} alone is <strong>not</strong>
+ * sufficient for multi-account transfers – the caller must hold an
+ * appropriate lock around the pair of operations to guarantee atomicity.</p>
  */
 public class BankAccount {
     private final int id;
     private final AtomicLong balance; // AtomicLong for monitoring, but not enough alone for transfers
     private final ReentrantLock lock = new ReentrantLock();
+
+    /*
+     * StampedLock provides three modes of access:
+     *   - write lock  (exclusive, blocking)   → writeLock() / unlockWrite(stamp)
+     *   - read lock   (shared, blocking)      → readLock() / unlockRead(stamp)
+     *   - optimistic read (lock-free, validate) → tryOptimisticRead() / validate(stamp)
+     *
+     * We expose it here so that TransferServiceStampedLock can perform
+     * optimistic reads and upgrade to write locks on the same account instance.
+     */
+    private final StampedLock stampedLock = new StampedLock();
 
     public BankAccount(int id, long initialBalance) {
         this.id = id;
@@ -33,6 +54,17 @@ public class BankAccount {
     }
 
     /**
+     * Returns the {@link StampedLock} associated with this account.
+     *
+     * <p>This lock is used by {@link TransferServiceStampedLock} to perform
+     * optimistic reads and write-lock upgrades in a single, unified locking
+     * strategy.</p>
+     */
+    public StampedLock getStampedLock() {
+        return stampedLock;
+    }
+
+    /**
      * Deposit money into the account.
      * Thread-safe with atomic overflow check using CAS loop.
      */
@@ -40,7 +72,7 @@ public class BankAccount {
         if (amount <= 0) {
             throw new IllegalArgumentException("Deposit amount must be positive");
         }
-        
+
         // Use CAS loop to ensure atomic overflow check and update
         long current;
         long newBalance;

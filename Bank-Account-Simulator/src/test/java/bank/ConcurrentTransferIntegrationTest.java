@@ -30,17 +30,17 @@ class ConcurrentTransferIntegrationTest {
     @Nested
     @DisplayName("Unsafe Service Concurrent Tests")
     class UnsafeServiceTests {
-        
+
         @Test
         @DisplayName("Should demonstrate race conditions with unsafe service")
         void shouldDemonstrateRaceConditions() throws InterruptedException {
             TransferServiceUnsafe service = new TransferServiceUnsafe();
             int numThreads = 20;
             int transfersPerThread = 100;
-            
+
             ExecutorService executor = Executors.newFixedThreadPool(numThreads);
             CountDownLatch latch = new CountDownLatch(numThreads);
-            
+
             for (int i = 0; i < numThreads; i++) {
                 executor.submit(() -> {
                     try {
@@ -52,14 +52,14 @@ class ConcurrentTransferIntegrationTest {
                     }
                 });
             }
-            
+
             latch.await();
             executor.shutdown();
-            
+
             long finalBalance = getTotalBalance();
             // With unsafe service, balance may be inconsistent
-            System.out.println("Unsafe service - Initial: " + TOTAL_INITIAL_BALANCE + 
-                             ", Final: " + finalBalance + 
+            System.out.println("Unsafe service - Initial: " + TOTAL_INITIAL_BALANCE +
+                             ", Final: " + finalBalance +
                              ", Difference: " + (finalBalance - TOTAL_INITIAL_BALANCE));
         }
     }
@@ -67,17 +67,17 @@ class ConcurrentTransferIntegrationTest {
     @Nested
     @DisplayName("Synchronized Service Concurrent Tests")
     class SynchronizedServiceTests {
-        
+
         @Test
         @DisplayName("Should maintain balance consistency with synchronized service")
         void shouldMaintainBalanceConsistency() throws InterruptedException {
             TransferServiceSynchronized service = new TransferServiceSynchronized();
             int numThreads = 20;
             int transfersPerThread = 100;
-            
+
             ExecutorService executor = Executors.newFixedThreadPool(numThreads);
             CountDownLatch latch = new CountDownLatch(numThreads);
-            
+
             for (int i = 0; i < numThreads; i++) {
                 executor.submit(() -> {
                     try {
@@ -85,9 +85,10 @@ class ConcurrentTransferIntegrationTest {
                             int from = ThreadLocalRandom.current().nextInt(NUM_ACCOUNTS);
                             int to = ThreadLocalRandom.current().nextInt(NUM_ACCOUNTS);
                             long amount = 1 + ThreadLocalRandom.current().nextInt(50);
-                            
+
                             if (from != to) {
-                                service.transfer(accounts[from], accounts[to], amount);
+                                TransactionRecord result = service.transfer(accounts[from], accounts[to], amount);
+                                assertThat(result).isNotNull();
                             }
                         }
                     } finally {
@@ -95,25 +96,25 @@ class ConcurrentTransferIntegrationTest {
                     }
                 });
             }
-            
+
             latch.await();
             executor.shutdown();
-            
+
             long finalBalance = getTotalBalance();
             assertThat(finalBalance).isEqualTo(TOTAL_INITIAL_BALANCE);
         }
-        
+
         @Test
         @DisplayName("Should not deadlock with lock ordering")
         void shouldNotDeadlockWithLockOrdering() throws InterruptedException {
             TransferServiceSynchronized service = new TransferServiceSynchronized();
             int numThreads = 10;
             int transfersPerThread = 1000;
-            
+
             ExecutorService executor = Executors.newFixedThreadPool(numThreads);
             CountDownLatch latch = new CountDownLatch(numThreads);
             AtomicInteger completedTransfers = new AtomicInteger(0);
-            
+
             for (int i = 0; i < numThreads; i++) {
                 final int threadId = i;
                 executor.submit(() -> {
@@ -123,12 +124,12 @@ class ConcurrentTransferIntegrationTest {
                             int from = threadId % NUM_ACCOUNTS;
                             int to = (threadId + 1) % NUM_ACCOUNTS;
                             long amount = 1L;
-                            
-                            boolean success = service.transfer(accounts[from], accounts[to], amount);
-                            if (success) {
+
+                            TransactionRecord result = service.transfer(accounts[from], accounts[to], amount);
+                            if (result.getStatus() == TransactionRecord.Status.SUCCESS) {
                                 completedTransfers.incrementAndGet();
                             }
-                            
+
                             // Reverse transfer to create more contention
                             service.transfer(accounts[to], accounts[from], amount);
                         }
@@ -137,10 +138,10 @@ class ConcurrentTransferIntegrationTest {
                     }
                 });
             }
-            
+
             boolean completed = latch.await(30, TimeUnit.SECONDS);
             executor.shutdown();
-            
+
             assertThat(completed).isTrue();
             assertThat(completedTransfers.get()).isGreaterThan(0);
             assertThat(getTotalBalance()).isEqualTo(TOTAL_INITIAL_BALANCE);
@@ -150,19 +151,19 @@ class ConcurrentTransferIntegrationTest {
     @Nested
     @DisplayName("Lock Service Concurrent Tests")
     class LockServiceTests {
-        
+
         @Test
         @DisplayName("Should maintain balance consistency with lock service")
         void shouldMaintainBalanceConsistency() throws InterruptedException {
             TransferServiceLock service = new TransferServiceLock();
             int numThreads = 15; // Within semaphore limit
             int transfersPerThread = 50;
-            
+
             ExecutorService executor = Executors.newFixedThreadPool(numThreads);
             CountDownLatch latch = new CountDownLatch(numThreads);
             AtomicInteger successfulTransfers = new AtomicInteger(0);
             AtomicInteger failedTransfers = new AtomicInteger(0);
-            
+
             for (int i = 0; i < numThreads; i++) {
                 executor.submit(() -> {
                     try {
@@ -170,7 +171,7 @@ class ConcurrentTransferIntegrationTest {
                             int from = ThreadLocalRandom.current().nextInt(NUM_ACCOUNTS);
                             int to = ThreadLocalRandom.current().nextInt(NUM_ACCOUNTS);
                             long amount = 1 + ThreadLocalRandom.current().nextInt(50);
-                            
+
                             if (from != to) {
                                 TransactionRecord result = service.transfer(accounts[from], accounts[to], amount);
                                 if (result.getStatus() == TransactionRecord.Status.SUCCESS) {
@@ -185,16 +186,16 @@ class ConcurrentTransferIntegrationTest {
                     }
                 });
             }
-            
+
             latch.await();
             executor.shutdown();
-            
+
             long finalBalance = getTotalBalance();
             assertThat(finalBalance).isEqualTo(TOTAL_INITIAL_BALANCE);
             assertThat(successfulTransfers.get() + failedTransfers.get())
-                .isGreaterThan(numThreads * transfersPerThread / 2);
+                    .isGreaterThan(numThreads * transfersPerThread / 2);
         }
-        
+
         @Test
         @DisplayName("Should handle concurrent transfers beyond semaphore limit")
         void shouldHandleConcurrentTransfersBeyondSemaphoreLimit() throws InterruptedException {
@@ -204,7 +205,7 @@ class ConcurrentTransferIntegrationTest {
             CountDownLatch latch = new CountDownLatch(numThreads);
             AtomicInteger attempts = new AtomicInteger(0);
             AtomicInteger successes = new AtomicInteger(0);
-            
+
             for (int i = 0; i < numThreads; i++) {
                 executor.submit(() -> {
                     try {
@@ -223,10 +224,10 @@ class ConcurrentTransferIntegrationTest {
                     }
                 });
             }
-            
+
             latch.await();
             executor.shutdown();
-            
+
             assertThat(getTotalBalance()).isEqualTo(TOTAL_INITIAL_BALANCE);
             assertThat(successes.get()).isLessThanOrEqualTo(attempts.get()); // Some should fail due to semaphore
         }
@@ -235,21 +236,21 @@ class ConcurrentTransferIntegrationTest {
     @Nested
     @DisplayName("Mixed Services Tests")
     class MixedServicesTests {
-        
+
         @Test
         @DisplayName("Should handle multiple service types concurrently")
         void shouldHandleMultipleServiceTypesConcurrently() throws InterruptedException {
             TransferServiceUnsafe unsafeService = new TransferServiceUnsafe();
             TransferServiceSynchronized syncService = new TransferServiceSynchronized();
             TransferServiceLock lockService = new TransferServiceLock();
-            
+
             BankAccount[] unsafeAccounts = createAccountArray();
             BankAccount[] syncAccounts = createAccountArray();
             BankAccount[] lockAccounts = createAccountArray();
-            
+
             ExecutorService executor = Executors.newFixedThreadPool(9);
             CountDownLatch latch = new CountDownLatch(3);
-            
+
             // Unsafe service thread
             executor.submit(() -> {
                 try {
@@ -260,7 +261,7 @@ class ConcurrentTransferIntegrationTest {
                     latch.countDown();
                 }
             });
-            
+
             // Synchronized service thread
             executor.submit(() -> {
                 try {
@@ -275,7 +276,7 @@ class ConcurrentTransferIntegrationTest {
                     latch.countDown();
                 }
             });
-            
+
             // Lock service thread
             executor.submit(() -> {
                 try {
@@ -290,19 +291,19 @@ class ConcurrentTransferIntegrationTest {
                     latch.countDown();
                 }
             });
-            
+
             latch.await();
             executor.shutdown();
-            
+
             // Only synchronized and lock services should maintain consistency
             long unsafeBalance = getTotalBalance(unsafeAccounts);
             long syncBalance = getTotalBalance(syncAccounts);
             long lockBalance = getTotalBalance(lockAccounts);
-            
-            System.out.println("Mixed services - Unsafe: " + unsafeBalance + 
-                             ", Sync: " + syncBalance + 
+
+            System.out.println("Mixed services - Unsafe: " + unsafeBalance +
+                             ", Sync: " + syncBalance +
                              ", Lock: " + lockBalance);
-            
+
             assertThat(syncBalance).isEqualTo(TOTAL_INITIAL_BALANCE);
             assertThat(lockBalance).isEqualTo(TOTAL_INITIAL_BALANCE);
         }
@@ -311,18 +312,18 @@ class ConcurrentTransferIntegrationTest {
     @Nested
     @DisplayName("Stress Tests")
     class StressTests {
-        
+
         @Test
         @DisplayName("Should handle high concurrency stress test")
         void shouldHandleHighConcurrencyStressTest() throws InterruptedException {
             TransferServiceSynchronized service = new TransferServiceSynchronized();
             int numThreads = 50;
             int transfersPerThread = 1000;
-            
+
             ExecutorService executor = Executors.newFixedThreadPool(numThreads);
             CountDownLatch latch = new CountDownLatch(numThreads);
             AtomicLong totalOperations = new AtomicLong(0);
-            
+
             for (int i = 0; i < numThreads; i++) {
                 executor.submit(() -> {
                     try {
@@ -330,7 +331,7 @@ class ConcurrentTransferIntegrationTest {
                             int from = ThreadLocalRandom.current().nextInt(NUM_ACCOUNTS);
                             int to = ThreadLocalRandom.current().nextInt(NUM_ACCOUNTS);
                             long amount = 1L;
-                            
+
                             if (from != to) {
                                 service.transfer(accounts[from], accounts[to], amount);
                                 totalOperations.incrementAndGet();
@@ -341,20 +342,20 @@ class ConcurrentTransferIntegrationTest {
                     }
                 });
             }
-            
+
             long startTime = System.currentTimeMillis();
             boolean completed = latch.await(60, TimeUnit.SECONDS);
             long endTime = System.currentTimeMillis();
-            
+
             executor.shutdown();
-            
+
             assertThat(completed).isTrue();
             assertThat(getTotalBalance()).isEqualTo(TOTAL_INITIAL_BALANCE);
             assertThat(totalOperations.get()).isGreaterThan(40000L);
-            
+
             double operationsPerSecond = totalOperations.get() / ((endTime - startTime) / 1000.0);
-            System.out.println("Stress test completed: " + totalOperations.get() + 
-                             " operations in " + (endTime - startTime) + "ms (" + 
+            System.out.println("Stress test completed: " + totalOperations.get() +
+                             " operations in " + (endTime - startTime) + "ms (" +
                              String.format("%.2f", operationsPerSecond) + " ops/sec)");
         }
     }

@@ -26,13 +26,13 @@ class TransferServiceSynchronizedTest {
     @Nested
     @DisplayName("Transfer Tests")
     class TransferTests {
-        
+
         @Test
         @DisplayName("Should transfer money successfully with sufficient funds")
         void shouldTransferMoneySuccessfullyWithSufficientFunds() {
-            boolean result = service.transfer(fromAccount, toAccount, TRANSFER_AMOUNT);
-            
-            assertThat(result).isTrue();
+            TransactionRecord result = service.transfer(fromAccount, toAccount, TRANSFER_AMOUNT);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
             assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
@@ -40,9 +40,9 @@ class TransferServiceSynchronizedTest {
         @Test
         @DisplayName("Should fail transfer with insufficient funds")
         void shouldFailTransferWithInsufficientFunds() {
-            boolean result = service.transfer(fromAccount, toAccount, INITIAL_BALANCE + 100L);
-            
-            assertThat(result).isFalse();
+            TransactionRecord result = service.transfer(fromAccount, toAccount, INITIAL_BALANCE + 100L);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.FAILED);
             assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE);
             assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE);
         }
@@ -50,18 +50,18 @@ class TransferServiceSynchronizedTest {
         @Test
         @DisplayName("Should fail transfer to same account")
         void shouldFailTransferToSameAccount() {
-            boolean result = service.transfer(fromAccount, fromAccount, TRANSFER_AMOUNT);
-            
-            assertThat(result).isFalse();
+            TransactionRecord result = service.transfer(fromAccount, fromAccount, TRANSFER_AMOUNT);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.FAILED);
             assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE);
         }
 
         @Test
         @DisplayName("Should transfer exact balance")
         void shouldTransferExactBalance() {
-            boolean result = service.transfer(fromAccount, toAccount, INITIAL_BALANCE);
-            
-            assertThat(result).isTrue();
+            TransactionRecord result = service.transfer(fromAccount, toAccount, INITIAL_BALANCE);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(fromAccount.getBalance()).isEqualTo(0L);
             assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE + INITIAL_BALANCE);
         }
@@ -70,56 +70,56 @@ class TransferServiceSynchronizedTest {
         @DisplayName("Should throw exception for null from account")
         void shouldThrowExceptionForNullFromAccount() {
             assertThatThrownBy(() -> service.transfer(null, toAccount, TRANSFER_AMOUNT))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Accounts cannot be null");
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("Accounts cannot be null");
         }
 
         @Test
         @DisplayName("Should throw exception for null to account")
         void shouldThrowExceptionForNullToAccount() {
             assertThatThrownBy(() -> service.transfer(fromAccount, null, TRANSFER_AMOUNT))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Accounts cannot be null");
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("Accounts cannot be null");
         }
 
         @Test
         @DisplayName("Should throw exception for both null accounts")
         void shouldThrowExceptionForBothNullAccounts() {
             assertThatThrownBy(() -> service.transfer(null, null, TRANSFER_AMOUNT))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Accounts cannot be null");
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("Accounts cannot be null");
         }
 
         @Test
         @DisplayName("Should handle zero amount transfer")
         void shouldHandleZeroAmountTransfer() {
             assertThatThrownBy(() -> service.transfer(fromAccount, toAccount, 0L))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Withdraw amount must be positive");
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("Withdraw amount must be positive");
         }
 
         @Test
         @DisplayName("Should handle negative amount transfer")
         void shouldHandleNegativeAmountTransfer() {
             assertThatThrownBy(() -> service.transfer(fromAccount, toAccount, -100L))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Withdraw amount must be positive");
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("Withdraw amount must be positive");
         }
     }
 
     @Nested
     @DisplayName("Lock Ordering Tests")
     class LockOrderingTests {
-        
+
         @Test
         @DisplayName("Should transfer from lower ID to higher ID")
         void shouldTransferFromLowerIdToHigherId() {
             BankAccount lowerId = new BankAccount(1, INITIAL_BALANCE);
             BankAccount higherId = new BankAccount(2, INITIAL_BALANCE);
-            
-            boolean result = service.transfer(lowerId, higherId, TRANSFER_AMOUNT);
-            
-            assertThat(result).isTrue();
+
+            TransactionRecord result = service.transfer(lowerId, higherId, TRANSFER_AMOUNT);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(lowerId.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
             assertThat(higherId.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
@@ -129,10 +129,10 @@ class TransferServiceSynchronizedTest {
         void shouldTransferFromHigherIdToLowerId() {
             BankAccount higherId = new BankAccount(2, INITIAL_BALANCE);
             BankAccount lowerId = new BankAccount(1, INITIAL_BALANCE);
-            
-            boolean result = service.transfer(higherId, lowerId, TRANSFER_AMOUNT);
-            
-            assertThat(result).isTrue();
+
+            TransactionRecord result = service.transfer(higherId, lowerId, TRANSFER_AMOUNT);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(higherId.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
             assertThat(lowerId.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
@@ -142,10 +142,10 @@ class TransferServiceSynchronizedTest {
         void shouldHandleTransfersWithSameIdAccounts() {
             BankAccount account1 = new BankAccount(1, INITIAL_BALANCE);
             BankAccount account2 = new BankAccount(1, INITIAL_BALANCE);
-            
-            boolean result = service.transfer(account1, account2, TRANSFER_AMOUNT);
-            
-            assertThat(result).isTrue();
+
+            TransactionRecord result = service.transfer(account1, account2, TRANSFER_AMOUNT);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(account1.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
             assertThat(account2.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
@@ -154,13 +154,13 @@ class TransferServiceSynchronizedTest {
     @Nested
     @DisplayName("Edge Cases")
     class EdgeCases {
-        
+
         @Test
         @DisplayName("Should handle maximum amount")
         void shouldHandleMaximumAmount() {
-            boolean result = service.transfer(fromAccount, toAccount, Long.MAX_VALUE);
-            
-            assertThat(result).isFalse(); // Should fail due to insufficient funds
+            TransactionRecord result = service.transfer(fromAccount, toAccount, Long.MAX_VALUE);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.FAILED);
             assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE);
             assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE);
         }
@@ -170,10 +170,10 @@ class TransferServiceSynchronizedTest {
         void shouldHandleTransferBetweenAccountsWithZeroBalance() {
             BankAccount zeroFrom = new BankAccount(3, 0L);
             BankAccount zeroTo = new BankAccount(4, 0L);
-            
-            boolean result = service.transfer(zeroFrom, zeroTo, 100L);
-            
-            assertThat(result).isFalse();
+
+            TransactionRecord result = service.transfer(zeroFrom, zeroTo, 100L);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.FAILED);
             assertThat(zeroFrom.getBalance()).isEqualTo(0L);
             assertThat(zeroTo.getBalance()).isEqualTo(0L);
         }
@@ -182,19 +182,19 @@ class TransferServiceSynchronizedTest {
         @DisplayName("Should handle transfer to account with maximum balance")
         void shouldHandleTransferToAccountWithMaximumBalance() {
             BankAccount maxAccount = new BankAccount(3, Long.MAX_VALUE - 1000);
-            
-            boolean result = service.transfer(fromAccount, maxAccount, 500L);
-            
-            assertThat(result).isTrue();
+
+            TransactionRecord result = service.transfer(fromAccount, maxAccount, 500L);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(maxAccount.getBalance()).isEqualTo(Long.MAX_VALUE - 500);
         }
 
         @Test
         @DisplayName("Should handle very small amounts")
         void shouldHandleVerySmallAmounts() {
-            boolean result = service.transfer(fromAccount, toAccount, 1L);
-            
-            assertThat(result).isTrue();
+            TransactionRecord result = service.transfer(fromAccount, toAccount, 1L);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE - 1L);
             assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE + 1L);
         }
@@ -203,35 +203,37 @@ class TransferServiceSynchronizedTest {
     @Nested
     @DisplayName("Thread Safety Tests")
     class ThreadSafetyTests {
-        
+
         @Test
         @DisplayName("Should maintain balance consistency under concurrent access")
         void shouldMaintainBalanceConsistencyUnderConcurrentAccess() throws InterruptedException {
             BankAccount account1 = new BankAccount(1, 1000L);
             BankAccount account2 = new BankAccount(2, 1000L);
             long totalBalance = account1.getBalance() + account2.getBalance();
-            
+
             int numThreads = 10;
             int transfersPerThread = 100;
             Thread[] threads = new Thread[numThreads];
-            
+
             for (int i = 0; i < numThreads; i++) {
                 threads[i] = new Thread(() -> {
                     for (int j = 0; j < transfersPerThread; j++) {
-                        service.transfer(account1, account2, 1L);
-                        service.transfer(account2, account1, 1L);
+                        TransactionRecord result1 = service.transfer(account1, account2, 1L);
+                        TransactionRecord result2 = service.transfer(account2, account1, 1L);
+                        assertThat(result1).isNotNull();
+                        assertThat(result2).isNotNull();
                     }
                 });
             }
-            
+
             for (Thread thread : threads) {
                 thread.start();
             }
-            
+
             for (Thread thread : threads) {
                 thread.join();
             }
-            
+
             assertThat(account1.getBalance() + account2.getBalance()).isEqualTo(totalBalance);
         }
     }

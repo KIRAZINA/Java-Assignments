@@ -22,6 +22,14 @@
             <version>5.10.0</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- AssertJ fluent assertions (assertThatThrownBy, etc.) -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>3.24.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

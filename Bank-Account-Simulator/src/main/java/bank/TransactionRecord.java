@@ -1,33 +1,33 @@
 package bank;
 
 /**
- * Represents a single transfer transaction record.
+ * Immutable transaction record capturing the outcome of a single fund transfer.
+ *
+ * <p>Implemented as a Java 17 {@code record} for concise, immutable data
+ * carriers.  A convenience canonical constructor (timestamp auto-generated) is
+ * provided for callers that do not need to specify the timestamp manually.</p>
  */
-public class TransactionRecord {
-    private final int fromId;
-    private final int toId;
-    private final long amount;
-    private final Status status;
-    private final long timestamp;
+public record TransactionRecord(int fromId, int toId, long amount, Status status, long timestamp) {
 
+    /**
+     * The lifecycle state of a transfer attempt.
+     */
     public enum Status {
         SUCCESS,
         FAILED,
         ROLLBACK
     }
 
+    /**
+     * Creates a record with the current wall-clock time as the timestamp.
+     */
     public TransactionRecord(int fromId, int toId, long amount, Status status) {
-        this.fromId = fromId;
-        this.toId = toId;
-        this.amount = amount;
-        this.status = status;
-        this.timestamp = System.currentTimeMillis();
+        this(fromId, toId, amount, status, System.currentTimeMillis());
     }
 
-    // ✅ Getter for status
-    public Status getStatus() {
-        return status;
-    }
+    // ------------------------------------------------------------------
+    // Backward-compatible getters (existing code/tests use getXxx() not xxx())
+    // ------------------------------------------------------------------
 
     public int getFromId() {
         return fromId;
@@ -39,6 +39,10 @@ public class TransactionRecord {
 
     public long getAmount() {
         return amount;
+    }
+
+    public Status getStatus() {
+        return status;
     }
 
     public long getTimestamp() {

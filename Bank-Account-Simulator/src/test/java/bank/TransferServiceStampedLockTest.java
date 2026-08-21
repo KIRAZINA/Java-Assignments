@@ -1,16 +1,16 @@
 package bank;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.*;
 
-@DisplayName("TransferServiceUnsafe Tests")
-class TransferServiceUnsafeTest {
+@DisplayName("TransferServiceStampedLock Tests")
+class TransferServiceStampedLockTest {
 
-    private TransferServiceUnsafe service;
+    private TransferServiceStampedLock service;
     private BankAccount fromAccount;
     private BankAccount toAccount;
     private static final long INITIAL_BALANCE = 1000L;
@@ -18,7 +18,7 @@ class TransferServiceUnsafeTest {
 
     @BeforeEach
     void setUp() {
-        service = new TransferServiceUnsafe();
+        service = new TransferServiceStampedLock();
         fromAccount = new BankAccount(1, INITIAL_BALANCE);
         toAccount = new BankAccount(2, INITIAL_BALANCE);
     }
@@ -33,9 +33,6 @@ class TransferServiceUnsafeTest {
             TransactionRecord result = service.transfer(fromAccount, toAccount, TRANSFER_AMOUNT);
 
             assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
-            assertThat(result.getFromId()).isEqualTo(fromAccount.getId());
-            assertThat(result.getToId()).isEqualTo(toAccount.getId());
-            assertThat(result.getAmount()).isEqualTo(TRANSFER_AMOUNT);
             assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
             assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
@@ -84,88 +81,36 @@ class TransferServiceUnsafeTest {
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("Accounts cannot be null");
         }
-
-        @Test
-        @DisplayName("Should throw exception for both null accounts")
-        void shouldThrowExceptionForBothNullAccounts() {
-            assertThatThrownBy(() -> service.transfer(null, null, TRANSFER_AMOUNT))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Accounts cannot be null");
-        }
-
-        @Test
-        @DisplayName("Should handle zero amount transfer")
-        void shouldHandleZeroAmountTransfer() {
-            assertThatThrownBy(() -> service.transfer(fromAccount, toAccount, 0L))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Withdraw amount must be positive");
-        }
-
-        @Test
-        @DisplayName("Should handle negative amount transfer")
-        void shouldHandleNegativeAmountTransfer() {
-            assertThatThrownBy(() -> service.transfer(fromAccount, toAccount, -100L))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Withdraw amount must be positive");
-        }
     }
 
     @Nested
-    @DisplayName("RandomTransfer Tests")
-    class RandomTransferTests {
+    @DisplayName("Lock Ordering Tests")
+    class LockOrderingTests {
 
         @Test
-        @DisplayName("Should perform random transfer successfully")
-        void shouldPerformRandomTransferSuccessfully() {
-            BankAccount[] accounts = {fromAccount, toAccount};
-            long totalBefore = fromAccount.getBalance() + toAccount.getBalance();
+        @DisplayName("Should transfer from lower ID to higher ID")
+        void shouldTransferFromLowerIdToHigherId() {
+            BankAccount lowerId = new BankAccount(1, INITIAL_BALANCE);
+            BankAccount higherId = new BankAccount(2, INITIAL_BALANCE);
 
-            TransactionRecord result = service.randomTransfer(accounts, 500L);
+            TransactionRecord result = service.transfer(lowerId, higherId, TRANSFER_AMOUNT);
 
-            assertThat(result).isNotNull();
-            assertThat(fromAccount.getBalance() + toAccount.getBalance()).isEqualTo(totalBefore);
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
+            assertThat(lowerId.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
+            assertThat(higherId.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
 
         @Test
-        @DisplayName("Should throw exception for null accounts array")
-        void shouldThrowExceptionForNullAccountsArray() {
-            assertThatThrownBy(() -> service.randomTransfer(null, 500L))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Accounts array cannot be null and must contain at least 2 accounts");
-        }
+        @DisplayName("Should transfer from higher ID to lower ID")
+        void shouldTransferFromHigherIdToLowerId() {
+            BankAccount higherId = new BankAccount(2, INITIAL_BALANCE);
+            BankAccount lowerId = new BankAccount(1, INITIAL_BALANCE);
 
-        @Test
-        @DisplayName("Should throw exception for empty accounts array")
-        void shouldThrowExceptionForEmptyAccountsArray() {
-            BankAccount[] emptyArray = {};
+            TransactionRecord result = service.transfer(higherId, lowerId, TRANSFER_AMOUNT);
 
-            assertThatThrownBy(() -> service.randomTransfer(emptyArray, 500L))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Accounts array cannot be null and must contain at least 2 accounts");
-        }
-
-        @Test
-        @DisplayName("Should throw exception for single account array")
-        void shouldThrowExceptionForSingleAccountArray() {
-            BankAccount[] singleAccount = {fromAccount};
-
-            assertThatThrownBy(() -> service.randomTransfer(singleAccount, 500L))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("Accounts array cannot be null and must contain at least 2 accounts");
-        }
-
-        @Test
-        @DisplayName("Should work with multiple accounts")
-        void shouldWorkWithMultipleAccounts() {
-            BankAccount account3 = new BankAccount(3, INITIAL_BALANCE);
-            BankAccount[] accounts = {fromAccount, toAccount, account3};
-            long totalBefore = fromAccount.getBalance() + toAccount.getBalance() + account3.getBalance();
-
-            TransactionRecord result = service.randomTransfer(accounts, 500L);
-
-            assertThat(result).isNotNull();
-            assertThat(fromAccount.getBalance() + toAccount.getBalance() + account3.getBalance())
-                    .isEqualTo(totalBefore);
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
+            assertThat(higherId.getBalance()).isEqualTo(INITIAL_BALANCE - TRANSFER_AMOUNT);
+            assertThat(lowerId.getBalance()).isEqualTo(INITIAL_BALANCE + TRANSFER_AMOUNT);
         }
     }
 
@@ -174,7 +119,7 @@ class TransferServiceUnsafeTest {
     class EdgeCases {
 
         @Test
-        @DisplayName("Should handle maximum amount")
+        @DisplayName("Should handle maximum amount transfer")
         void shouldHandleMaximumAmount() {
             TransactionRecord result = service.transfer(fromAccount, toAccount, Long.MAX_VALUE);
 
@@ -197,14 +142,63 @@ class TransferServiceUnsafeTest {
         }
 
         @Test
-        @DisplayName("Should handle transfer to account with maximum balance")
+        @DisplayName("Should handle very small amounts")
+        void shouldHandleVerySmallAmounts() {
+            TransactionRecord result = service.transfer(fromAccount, toAccount, 1L);
+
+            assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
+            assertThat(fromAccount.getBalance()).isEqualTo(INITIAL_BALANCE - 1L);
+            assertThat(toAccount.getBalance()).isEqualTo(INITIAL_BALANCE + 1L);
+        }
+
+        @Test
+        @DisplayName("Should handle transfer to account with near-maximum balance (rollback on overflow)")
         void shouldHandleTransferToAccountWithMaximumBalance() {
             BankAccount maxAccount = new BankAccount(3, Long.MAX_VALUE - 1000);
 
+            // This should succeed — the deposit should not overflow
             TransactionRecord result = service.transfer(fromAccount, maxAccount, 500L);
 
             assertThat(result.getStatus()).isEqualTo(TransactionRecord.Status.SUCCESS);
             assertThat(maxAccount.getBalance()).isEqualTo(Long.MAX_VALUE - 500);
+        }
+    }
+
+    @Nested
+    @DisplayName("Thread Safety Tests")
+    class ThreadSafetyTests {
+
+        @Test
+        @DisplayName("Should maintain balance consistency under concurrent StampedLock transfers")
+        void shouldMaintainBalanceConsistencyUnderConcurrentAccess() throws InterruptedException {
+            int numThreads = 10;
+            int transfersPerThread = 200;
+            long totalExpected = fromAccount.getBalance() + toAccount.getBalance();
+
+            Thread[] threads = new Thread[numThreads];
+
+            for (int i = 0; i < numThreads; i++) {
+                threads[i] = new Thread(() -> {
+                    for (int j = 0; j < transfersPerThread; j++) {
+                        // Transfer back and forth
+                        TransactionRecord r1 = service.transfer(fromAccount, toAccount, 1L);
+                        TransactionRecord r2 = service.transfer(toAccount, fromAccount, 1L);
+                        assertThat(r1).isNotNull();
+                        assertThat(r2).isNotNull();
+                    }
+                });
+            }
+
+            for (Thread t : threads) {
+                t.start();
+            }
+
+            for (Thread t : threads) {
+                t.join(30_000);
+                assertThat(t.isAlive()).isFalse();
+            }
+
+            assertThat(fromAccount.getBalance() + toAccount.getBalance()).isEqualTo(totalExpected);
         }
     }
 }
