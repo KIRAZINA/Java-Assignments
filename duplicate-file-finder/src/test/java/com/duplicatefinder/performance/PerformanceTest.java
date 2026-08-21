@@ -285,24 +285,27 @@ class PerformanceTest {
     }
 
     private void createLargeTestDataset(int totalFiles, int duplicateGroups) throws IOException {
-        int filesPerGroup = totalFiles / duplicateGroups;
-        
+        int duplicateFileCount = totalFiles - 10;
+        int filesPerGroup = duplicateFileCount / duplicateGroups;
+        int remainder = duplicateFileCount % duplicateGroups;
+
+        // The production detector intentionally groups by filename first. Keep each
+        // duplicate group’s filename identical while separating files into directories.
         for (int group = 0; group < duplicateGroups; group++) {
             String content = "Duplicate content for group " + group;
-            
-            for (int file = 0; file < filesPerGroup; file++) {
-                Path filePath = tempDir.resolve(String.format("group%d_file%d.txt", group, file));
-                Files.writeString(filePath, content);
+            int filesInGroup = filesPerGroup + (group < remainder ? 1 : 0);
+            for (int file = 0; file < filesInGroup; file++) {
+                Path folder = tempDir.resolve("group" + group).resolve("copy" + file);
+                Files.createDirectories(folder);
+                Files.writeString(folder.resolve("duplicate.txt"), content);
             }
         }
-        
-        // Add some unique files
+
+        // Add ten unique files to retain the original dataset size.
         for (int i = 0; i < 10; i++) {
-            Path uniqueFile = tempDir.resolve("unique" + i + ".txt");
-            Files.writeString(uniqueFile, "Unique content " + i);
+            Files.writeString(tempDir.resolve("unique" + i + ".txt"), "Unique content " + i);
         }
     }
-
     private void createLargeFileDataset(int fileCount, int fileSizeKB) throws IOException {
         byte[] content = new byte[fileSizeKB * 1024];
         for (int i = 0; i < content.length; i++) {
@@ -335,3 +338,5 @@ class PerformanceTest {
         }
     }
 }
+
+
