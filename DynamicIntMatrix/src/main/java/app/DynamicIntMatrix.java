@@ -1,96 +1,168 @@
 package app;
 
+import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Arrays;
+import java.nio.file.Path;
 import java.util.Objects;
 
 /**
- * Dynamic two-dimensional integer matrix.
+ * Dynamic two-dimensional integer matrix built entirely from raw {@code int[][]}
+ * storage. This implementation deliberately avoids {@code java.util.Arrays.copyOf},
+ * {@code java.util.List} and streams for every core operation; the ONLY copying
+ * primitive used is {@link System#arraycopy}.
  *
- * Storage: int[][] data, actual sizes rows and cols.
- * Capacity: data.length and data[r].length may be >= rows/cols.
+ * <h2>Memory model</h2>
+ * Storage is an outer array {@code int[][] data} representing the row capacity
+ * (i.e. {@code data.length >= rows}). Each slot {@code data[r]} is itself an
+ * {@code int[]} of length {@code colCapacity} (i.e. {@code data[r].length >= cols}).
+ * The logical dimensions are {@code rows} and {@code cols}.
  *
- * This class provides dynamic growth for rows and columns and basic
- * operations including indexed insertion and removal, submatrix,
- * transpose and rotation.
+ * Keeping a separate {@code colCapacity} field (rather than re-deriving it from
+ * {@code data[0].length}) lets us:
+ *   - allocate brand new row slots after a removed row was nullified (see
+ *     {@link #removeRow}), and
+ *   - keep every allocated row the same width so {@code System.arraycopy} across
+ *     rows is always safe.
+ *
+ * <h2>Anti-fragmentation</h2>
+ * When a row is removed its reference is set to {@code null} instead of being
+ * left as a dangling/duplicate reference. This lets the garbage collector
+ * reclaim the backing {@code int[]} immediately. Slots beyond the logical row
+ * count that are no longer needed are also nullified. {@link #trimToSize()}
+ * shrinks the outer array to exactly {@code rows} entries.
+ *
+ * <h2>Immutability contract</h2>
+ * Every mathematical operation ({@code add}, {@code subtract}, {@code multiply},
+ * {@code multiplyByScalar}, {@code transpose}, {@code getSubmatrix},
+ * {@code deepCopy}) returns a NEW {@code DynamicIntMatrix}. Mutating operations
+ * are limited to the insertion/removal/resize family and {@code rotate90Clockwise}.
  */
 public class DynamicIntMatrix {
+
+    /** Outer array; its length is the ROW CAPACITY. May contain null row slots. */
     private int[][] data;
+    /** Logical number of rows actually holding data. */
     private int rows;
+    /** Logical number of columns actually holding data. */
     private int cols;
+    /** Per-row array capacity; every allocated row has this length. */
+    private int colCapacity;
 
     private static final int INITIAL_ROWS = 4;
     private static final int INITIAL_COLS = 4;
     private static final int GROW_FACTOR = 2;
 
+    /**
+     * Construct an empty matrix (zero logical dimensions, zero capacity).
+     * Capacity is allocated lazily as rows/columns are added, which keeps the
+     * footprint of an empty matrix minimal.
+     */
     public DynamicIntMatrix() {
-        this(INITIAL_ROWS, INITIAL_COLS);
+        this.data = new int[0][];
+        this.rows = 0;
+        this.cols = 0;
+        this.colCapacity = 0;
+    }
+
+    /**
+     * Construct a matrix with the given CAPACITY (not logical size). The object
+     * is allocated to hold {@code initialRows * initialCols} cells, but its
+     * logical size starts at {@code 0 x 0} until content is added. Used
+     * internally as a pre-allocation strategy to avoid repeated re-growth.
+     */
+    public DynamicIntMatrix(int initialRows, int initialCols) {
+        if (initialRows < 0 || initialCols < 0) {
+            throw new IllegalArgumentException("initial dimensions must be non-negative");
+        }
+        this.data = new int[initialRows][];
+        this.colCapacity = initialCols;
+        for (int i = 0; i < initialRows; i++) {
+            // Allocate every row at the requested column capacity up front.
+            this.data[i] = new int[initialCols];
+        }
         this.rows = 0;
         this.cols = 0;
     }
 
-    public DynamicIntMatrix(int initialRows, int initialCols) {
-        if (initialRows <= 0 || initialCols <= 0) {
-            throw new IllegalArgumentException("initial dimensions must be > 0");
-        }
-        data = new int[initialRows][initialCols];
-        // initialize each row array
-        for (int i = 0; i < initialRows; i++) {
-            data[i] = new int[initialCols];
-        }
-        rows = 0;
-        cols = 0;
-    }
-
-    // Returns actual number of rows
+    /** @return logical number of rows. */
     public int rows() {
         return rows;
     }
 
-    // Returns actual number of columns
+    /** @return logical number of columns. */
     public int cols() {
         return cols;
     }
 
+    /** @return true if the matrix has no cells (either dimension is zero). */
     public boolean isEmpty() {
         return rows == 0 || cols == 0;
     }
 
+    /**
+     * Ensure the outer array can hold at least {@code minRows} rows.
+     * Grows geometrically (doubling) to amortise the cost of repeated appends.
+     * Newly created outer slots are filled with fresh {@code int[colCapacity]}
+     * arrays so that they are never {@code null} when first touched.
+     */
     private void ensureRowCapacity(int minRows) {
+        if (minRows <= 0) return;
         if (data.length >= minRows) return;
-        int newCapacity = Math.max(minRows, data.length * GROW_FACTOR);
-        int[][] newData = new int[newCapacity][];
+        int newCap = Math.max(minRows, data.length == 0 ? INITIAL_ROWS : data.length * GROW_FACTOR);
+        int[][] newData = new int[newCap][];
+        // Copy existing references (may include nulls) directly; this is a pure
+        // reference move of the OUTER array, no per-element work on the rows.
         System.arraycopy(data, 0, newData, 0, data.length);
-        int baseCols = (data.length > 0 && data[0] != null) ? data[0].length : Math.max(INITIAL_COLS, cols);
-        for (int i = data.length; i < newCapacity; i++) {
-            newData[i] = new int[baseCols];
+        int cc = Math.max(colCapacity, INITIAL_COLS);
+        for (int i = data.length; i < newCap; i++) {
+            newData[i] = new int[cc];
         }
         data = newData;
     }
 
+    /**
+     * Ensure every allocated row array can hold at least {@code minCols} columns.
+     * Because column growth requires widening each row individually we iterate
+     * the rows and use {@link System#arraycopy} to preserve existing values.
+     * Freed (null) slots are skipped here and allocated lazily on reuse.
+     */
     private void ensureColCapacity(int minCols) {
-        int currentRowCapacity = data.length > 0 ? data[0].length : 0;
-        if (currentRowCapacity >= minCols) return;
-        int newColCapacity = Math.max(minCols, Math.max(currentRowCapacity * GROW_FACTOR, INITIAL_COLS));
+        if (minCols <= 0) return;
+        if (colCapacity >= minCols) return;
+        int newCap = Math.max(minCols,
+                Math.max(colCapacity == 0 ? INITIAL_COLS : colCapacity * GROW_FACTOR, INITIAL_COLS));
         for (int r = 0; r < data.length; r++) {
-            int[] oldRow = data[r];
-            int[] newRow = new int[newColCapacity];
-            if (oldRow != null) {
-                System.arraycopy(oldRow, 0, newRow, 0, oldRow.length);
-            }
-            data[r] = newRow;
+            if (data[r] == null) continue; // will be (re)allocated on reuse
+            int[] old = data[r];
+            int[] grown = new int[newCap];
+            System.arraycopy(old, 0, grown, 0, old.length);
+            data[r] = grown;
+        }
+        colCapacity = newCap;
+    }
+
+    /**
+     * Guarantee that {@code data[index]} is non-null and wide enough to receive
+     * data. Used before writing into a slot that may have been nullified by a
+     * previous {@link #removeRow}.
+     */
+    private void ensureRowReady(int index) {
+        ensureRowCapacity(index + 1);
+        if (data[index] == null) {
+            data[index] = new int[Math.max(colCapacity, INITIAL_COLS)];
         }
     }
 
     private void checkIndex(int row, int col) {
         if (row < 0 || row >= rows) {
-            throw new IndexOutOfBoundsException("row out of bounds: " + row);
+            throw new IndexOutOfBoundsException("row out of bounds: " + row + " (rows=" + rows + ")");
         }
         if (col < 0 || col >= cols) {
-            throw new IndexOutOfBoundsException("col out of bounds: " + col);
+            throw new IndexOutOfBoundsException("col out of bounds: " + col + " (cols=" + cols + ")");
         }
     }
 
@@ -107,27 +179,33 @@ public class DynamicIntMatrix {
     }
 
     /**
-     * Append a row at the end. If matrix is empty, cols is set to rowValues.length.
+     * Append a row at the end. If the matrix is empty this first insertion
+     * defines {@code cols}.
+     *
+     * @throws NullPointerException if {@code rowValues} is null
+     * @throws IllegalArgumentException if {@code rowValues.length != cols}
      */
     public void addRow(int[] rowValues) {
         Objects.requireNonNull(rowValues, "rowValues must not be null");
         if (rows == 0 && cols == 0) {
             cols = rowValues.length;
-            ensureRowCapacity(Math.max(1, rows + 1));
-            ensureColCapacity(cols);
-        } else {
-            if (rowValues.length != cols) {
-                throw new IllegalArgumentException("row length must equal current cols: expected " + cols + " but was " + rowValues.length);
-            }
+        } else if (rowValues.length != cols) {
+            throw new IllegalArgumentException("row length must equal current cols: expected "
+                    + cols + " but was " + rowValues.length);
         }
-        ensureRowCapacity(rows + 1);
         ensureColCapacity(cols);
+        ensureRowCapacity(rows + 1);
+        ensureRowReady(rows);
         System.arraycopy(rowValues, 0, data[rows], 0, cols);
         rows++;
     }
 
     /**
-     * Insert a row at the given index. Valid indices: 0..rows (inclusive).
+     * Insert a row at {@code index} (valid range {@code 0..rows} inclusive).
+     * Rows are shifted DOWN by one using {@link System#arraycopy} on the outer
+     * reference array. The destination slot at {@code index} is given a FRESH
+     * array, because the in-place shift leaves {@code data[index]} aliased to the
+     * shifted element at {@code index+1}; reusing it would corrupt that neighbor.
      */
     public void addRow(int index, int[] rowValues) {
         Objects.requireNonNull(rowValues, "rowValues must not be null");
@@ -135,59 +213,54 @@ public class DynamicIntMatrix {
             throw new IndexOutOfBoundsException("row index out of bounds: " + index);
         }
         if (rows == 0 && cols == 0) {
-            // first insertion defines cols
             cols = rowValues.length;
-            ensureRowCapacity(Math.max(1, rows + 1));
-            ensureColCapacity(cols);
-        } else {
-            if (rowValues.length != cols) {
-                throw new IllegalArgumentException("row length must equal current cols: expected " + cols + " but was " + rowValues.length);
-            }
+        } else if (rowValues.length != cols) {
+            throw new IllegalArgumentException("row length must equal current cols: expected "
+                    + cols + " but was " + rowValues.length);
         }
-        ensureRowCapacity(rows + 1);
         ensureColCapacity(cols);
-        // shift rows down starting from index
+        ensureRowCapacity(rows + 1);
+        // Shift the reference block down by one. System.arraycopy performs a
+        // memmove, so overlapping source/dest is handled correctly.
         if (rows - index > 0) {
             System.arraycopy(data, index, data, index + 1, rows - index);
         }
-        // copy new row into position
+        // Replace the aliased slot with a brand new array, then copy the values.
+        data[index] = new int[Math.max(colCapacity, INITIAL_COLS)];
         System.arraycopy(rowValues, 0, data[index], 0, cols);
         rows++;
     }
 
     /**
-     * Remove row at index and return removed row values.
+     * Remove the row at {@code index} and return its values.
+     *
+     * The remaining rows are shifted UP via {@link System#arraycopy}. The slot
+     * that becomes free (the previous last logical slot) is set to {@code null}
+     * so no dangling/duplicate reference survives and the GC can reclaim it.
      */
     public int[] removeRow(int index) {
         if (index < 0 || index >= rows) {
             throw new IndexOutOfBoundsException("row index out of bounds: " + index);
         }
         int[] removed = new int[cols];
-        // copy removed values before shifting
         System.arraycopy(data[index], 0, removed, 0, cols);
 
-        // shift rows up (move references)
+        // Shift references up: data[index+1..] -> data[index..].
         if (rows - index - 1 > 0) {
             System.arraycopy(data, index + 1, data, index, rows - index - 1);
         }
-
-        // replace the last occupied row slot with a fresh array to avoid
-        // clearing an array that is now referenced from another position
-        int last = rows - 1;
-        int rowCapacity = (data.length > 0 && data[0] != null) ? data[0].length : Math.max(INITIAL_COLS, cols);
-        data[last] = new int[rowCapacity];
+        // Anti-fragmentation: the previously last slot now holds a stale
+        // duplicate reference; null it out so the int[] can be collected.
+        data[rows - 1] = null;
 
         rows--;
-        // If matrix becomes empty, reset cols to 0 (keep capacity)
-        if (rows == 0) {
-            cols = 0;
-        }
+        if (rows == 0) cols = 0;
         return removed;
     }
 
-
     /**
-     * Append a column at the end. If matrix is empty, rows is set to colValues.length.
+     * Append a column at the end. If the matrix is empty this first insertion
+     * defines {@code rows}.
      */
     public void addCol(int[] colValues) {
         Objects.requireNonNull(colValues, "colValues must not be null");
@@ -198,10 +271,11 @@ public class DynamicIntMatrix {
             ensureColCapacity(cols);
         } else {
             if (colValues.length != rows) {
-                throw new IllegalArgumentException("col length must equal current rows: expected " + rows + " but was " + colValues.length);
+                throw new IllegalArgumentException("col length must equal current rows: expected "
+                        + rows + " but was " + colValues.length);
             }
+            ensureColCapacity(cols + 1);
         }
-        ensureColCapacity(cols + 1);
         for (int r = 0; r < rows; r++) {
             data[r][cols] = colValues[r];
         }
@@ -209,7 +283,9 @@ public class DynamicIntMatrix {
     }
 
     /**
-     * Insert a column at the given index. Valid indices: 0..cols (inclusive).
+     * Insert a column at {@code index} (valid range {@code 0..cols} inclusive).
+     * Each row is widened by shifting its tail right one cell with
+     * {@link System#arraycopy}; the new cell defaults to {@code 0}.
      */
     public void addCol(int index, int[] colValues) {
         Objects.requireNonNull(colValues, "colValues must not be null");
@@ -217,20 +293,20 @@ public class DynamicIntMatrix {
             throw new IndexOutOfBoundsException("col index out of bounds: " + index);
         }
         if (rows == 0 && cols == 0) {
-            // first insertion defines rows
             rows = colValues.length;
             ensureRowCapacity(rows);
-            cols = 0; // will be incremented below
+            cols = 0; // incremented below
             ensureColCapacity(Math.max(1, cols + 1));
         } else {
             if (colValues.length != rows) {
-                throw new IllegalArgumentException("col length must equal current rows: expected " + rows + " but was " + colValues.length);
+                throw new IllegalArgumentException("col length must equal current rows: expected "
+                        + rows + " but was " + colValues.length);
             }
+            ensureColCapacity(cols + 1);
         }
-        ensureColCapacity(cols + 1);
-        // for each row, shift elements right from index to cols-1
         for (int r = 0; r < rows; r++) {
             int[] row = data[r];
+            // Shift the existing tail to the right to open slot 'index'.
             if (cols - index > 0) {
                 System.arraycopy(row, index, row, index + 1, cols - index);
             }
@@ -240,7 +316,10 @@ public class DynamicIntMatrix {
     }
 
     /**
-     * Remove column at index and return removed column values.
+     * Remove the column at {@code index} and return its values.
+     * Each row's tail is shifted LEFT with {@link System#arraycopy} and the
+     * freed last column cell is zeroed (primitive ints have no references, so a
+     * zero is sufficient for hygiene / re-growth correctness).
      */
     public int[] removeCol(int index) {
         if (index < 0 || index >= cols) {
@@ -253,30 +332,24 @@ public class DynamicIntMatrix {
             if (cols - index - 1 > 0) {
                 System.arraycopy(row, index + 1, row, index, cols - index - 1);
             }
-            // clear last occupied column in this row
-            row[cols - 1] = 0;
+            row[cols - 1] = 0; // clear the now-unused trailing cell
         }
         cols--;
-        if (cols == 0) {
-            // if no columns left, reset rows to 0 as well (matrix becomes empty)
-            rows = 0;
-        }
+        if (cols == 0) rows = 0;
         return removed;
     }
 
+    /** Zero out every cell but keep the logical dimensions unchanged. */
     public void clear() {
         for (int r = 0; r < rows; r++) {
-            int[] row = data[r];
-            if (row != null) {
-                for (int c = 0; c < cols; c++) {
-                    row[c] = 0;
-                }
-            }
+            // Nullifying (rather than zeroing) releases references for GC.
+            data[r] = null;
         }
         rows = 0;
         cols = 0;
     }
 
+    /** Set every cell to {@code value}. */
     public void fill(int value) {
         for (int r = 0; r < rows; r++) {
             int[] row = data[r];
@@ -286,6 +359,7 @@ public class DynamicIntMatrix {
         }
     }
 
+    /** @return a flat row-major copy of all cells. */
     public int[] flattenRowMajor() {
         int total = rows * cols;
         int[] out = new int[total];
@@ -297,256 +371,147 @@ public class DynamicIntMatrix {
         return out;
     }
 
+    // ------------------------------------------------------------------
+    // BINARY SERIALIZATION (null-row aware, DataInputStream/OutputStream)
+    // ------------------------------------------------------------------
+
     /**
-     * Write matrix to DataOutputStream in binary format:
-     * int rows, int cols, then rows*cols ints in row-major order.
+     * Serialise to a byte array using {@link DataOutputStream}.
+     *
+     * <p>Wire format:
+     * <pre>
+     *   int   rows
+     *   int   cols
+     *   for each row r in [0, rows):
+     *       byte  flag   (1 = valid row, 0 = null row)
+     *       if flag == 1: cols ints (row data, row-major)
+     * </pre>
+     * Null rows are preserved across a round-trip via the per-row flag byte.
+     */
+    public byte[] serializeToBytes() throws IOException {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        try (DataOutputStream dos = new DataOutputStream(baos)) {
+            writeTo(dos);
+        }
+        return baos.toByteArray();
+    }
+
+    /**
+     * Write the matrix in the canonical binary format (see {@link #serializeToBytes}).
+     * Does not close the supplied {@link DataOutputStream}.
      */
     public void writeTo(DataOutputStream out) throws IOException {
         out.writeInt(rows);
         out.writeInt(cols);
         for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                out.writeInt(data[r][c]);
+            if (data[r] == null) {
+                out.writeByte(0); // null row marker
+            } else {
+                out.writeByte(1); // valid row marker
+                for (int c = 0; c < cols; c++) {
+                    out.writeInt(data[r][c]);
+                }
             }
         }
     }
 
     /**
-     * Read matrix from InputStream in binary format.
-     * Does not close the stream.
+     * Reconstruct a matrix from a byte array produced by {@link #serializeToBytes()}.
+     *
+     * @throws IOException if the stream is truncated or otherwise corrupted
+     *         (negative dimensions, an invalid row flag, or an unexpected EOF).
+     */
+    public static DynamicIntMatrix deserializeFromBytes(byte[] bytes) throws IOException {
+        try (DataInputStream dis = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            return readFrom(dis);
+        }
+    }
+
+    /**
+     * Read a matrix in the canonical binary format from an {@link InputStream}.
+     * This low-level reader does NOT close the supplied stream.
+     *
+     * @throws IOException with a descriptive message on corruption.
      */
     public static DynamicIntMatrix readFrom(InputStream in) throws IOException {
-        DataInputStream dis;
-        if (in instanceof DataInputStream) {
-            dis = (DataInputStream) in;
-        } else {
-            dis = new DataInputStream(in);
+        DataInputStream dis = (in instanceof DataInputStream)
+                ? (DataInputStream) in
+                : new DataInputStream(in);
+
+        int r;
+        int c;
+        try {
+            r = dis.readInt();
+            c = dis.readInt();
+        } catch (EOFException eof) {
+            throw new IOException("Corrupted stream: unable to read matrix dimensions (rows, cols)", eof);
+        }
+        if (r < 0 || c < 0) {
+            throw new IOException("Corrupted stream: negative dimensions (rows=" + r + ", cols=" + c + ")");
         }
 
-        int rows = dis.readInt();
-        int cols = dis.readInt();
+        DynamicIntMatrix m = new DynamicIntMatrix(Math.max(r, 1), Math.max(c, 1));
+        m.rows = r;
+        m.cols = c;
 
-        DynamicIntMatrix m = new DynamicIntMatrix(Math.max(rows, 1), Math.max(cols, 1));
-        
-        if (rows > 0 && cols > 0) {
-            m.rows = rows;
-            m.cols = cols;
-            for (int r = 0; r < rows; r++) {
-                for (int c = 0; c < cols; c++) {
-                    m.data[r][c] = dis.readInt();
+        for (int i = 0; i < r; i++) {
+            int flag;
+            try {
+                flag = dis.readByte();
+            } catch (EOFException eof) {
+                throw new IOException("Corrupted stream: unexpected EOF reading row flag at index " + i, eof);
+            }
+            if (flag == 1) {
+                m.data[i] = new int[Math.max(c, 1)];
+                for (int j = 0; j < c; j++) {
+                    try {
+                        m.data[i][j] = dis.readInt();
+                    } catch (EOFException eof) {
+                        throw new IOException("Corrupted stream: unexpected EOF reading cell ("
+                                + i + "," + j + ")", eof);
+                    }
                 }
+            } else if (flag == 0) {
+                m.data[i] = null;
+            } else {
+                throw new IOException("Corrupted stream: invalid row flag " + flag
+                        + " at row index " + i);
             }
         }
         return m;
     }
 
+    // ------------------------------------------------------------------
+    // CSV (delegates to MatrixUtils, which owns the format/escaping)
+    // ------------------------------------------------------------------
 
-    /**
-     * Return a submatrix defined by half-open ranges:
-     * [rowFrom, rowTo) and [colFrom, colTo).
-     *
-     * Preconditions:
-     *  - 0 <= rowFrom <= rowTo <= rows
-     *  - 0 <= colFrom <= colTo <= cols
-     *
-     * The returned matrix is a copy (no shared backing).
-     */
-    public DynamicIntMatrix subMatrix(int rowFrom, int rowTo, int colFrom, int colTo) {
-        if (rowFrom < 0 || rowTo < rowFrom || rowTo > rows) {
-            throw new IndexOutOfBoundsException("invalid row range: [" + rowFrom + ", " + rowTo + ")");
-        }
-        if (colFrom < 0 || colTo < colFrom || colTo > cols) {
-            throw new IndexOutOfBoundsException("invalid col range: [" + colFrom + ", " + colTo + ")");
-        }
-        int newRows = rowTo - rowFrom;
-        int newCols = colTo - colFrom;
-        
-        // Create with exact capacity needed
-        DynamicIntMatrix result = new DynamicIntMatrix(Math.max(newRows, 1), Math.max(newCols, 1));
-        
-        // if empty submatrix, return empty matrix (rows/cols remain 0)
-        if (newRows == 0 || newCols == 0) {
-            return result;
-        }
-
-        // Optimization: directly copy into result's data to avoid double allocation/copying
-        // Since we are in the same class, we can access private members of 'result'
-        result.rows = newRows;
-        result.cols = newCols;
-        
-        for (int r = 0; r < newRows; r++) {
-            // result.data[r] was allocated by constructor
-            System.arraycopy(this.data[rowFrom + r], colFrom, result.data[r], 0, newCols);
-        }
-        return result;
+    /** Write this matrix to a CSV file (see {@link MatrixUtils#exportToCsv}). */
+    public void exportToCsv(Path filePath) throws IOException {
+        MatrixUtils.exportToCsv(this, filePath);
     }
 
-    /**
-     * Return a new matrix that is the transpose of this matrix.
-     * The original matrix is not modified.
-     */
-    public DynamicIntMatrix transpose() {
-        if (rows == 0 || cols == 0) {
-            return new DynamicIntMatrix();
-        }
-        DynamicIntMatrix t = new DynamicIntMatrix(Math.max(cols, 1), Math.max(rows, 1));
-        // build transposed rows
-        for (int r = 0; r < cols; r++) {
-            int[] newRow = new int[rows];
-            for (int c = 0; c < rows; c++) {
-                newRow[c] = this.data[c][r];
-            }
-            t.addRow(newRow);
-        }
-        return t;
+    /** Read a matrix from a CSV file (see {@link MatrixUtils#importFromCsv}). */
+    public static DynamicIntMatrix importFromCsv(Path filePath) throws IOException {
+        return MatrixUtils.importFromCsv(filePath);
     }
 
-    /**
-     * Rotate the matrix 90 degrees clockwise in-place when possible.
-     *
-     * Behavior:
-     *  - If the matrix is square (rows == cols), perform an in-place rotation
-     *    using layer-by-layer swaps.
-     *  - If the matrix is non-square, create a new backing array with swapped
-     *    dimensions and replace internal storage so that this instance becomes
-     *    the rotated matrix (method mutates this object).
-     *
-     * Complexity: O(rows*cols).
-     */
-    public void rotate90Clockwise() {
-        if (rows == 0 || cols == 0) {
-            return; // nothing to do
-        }
-        if (rows == cols) {
-            // in-place rotation for square matrix
-            int n = rows;
-            for (int layer = 0; layer < n / 2; layer++) {
-                int first = layer;
-                int last = n - 1 - layer;
-                for (int i = first; i < last; i++) {
-                    int offset = i - first;
-                    int top = data[first][i]; // save top
-                    // left -> top
-                    data[first][i] = data[last - offset][first];
-                    // bottom -> left
-                    data[last - offset][first] = data[last][last - offset];
-                    // right -> bottom
-                    data[last][last - offset] = data[i][last];
-                    // top -> right
-                    data[i][last] = top;
-                }
-            }
-            // rows and cols unchanged
-        } else {
-            // non-square: create new backing with swapped dimensions
-            int newRows = cols;
-            int newCols = rows;
-            int[][] newData = new int[Math.max(newRows, 1)][Math.max(newCols, 1)];
-            // initialize rows
-            for (int r = 0; r < newData.length; r++) {
-                newData[r] = new int[Math.max(newCols, 1)];
-            }
-            // fill newData with rotated values
-            for (int r = 0; r < rows; r++) {
-                for (int c = 0; c < cols; c++) {
-                    // position (r,c) -> (c, newCols - 1 - r)
-                    newData[c][newCols - 1 - r] = data[r][c];
-                }
-            }
-            // replace internal storage and update sizes
-            this.data = newData;
-            this.rows = newRows;
-            this.cols = newCols;
-        }
-    }
+    // ------------------------------------------------------------------
+    // MATHEMATICAL OPERATIONS (all return a NEW matrix)
+    // ------------------------------------------------------------------
 
     /**
-     * Resize the matrix to the new dimensions.
-     * If new dimensions are larger, new cells are filled with 0.
-     * If new dimensions are smaller, the matrix is truncated.
+     * Matrix addition: {@code C = A + B}.
      *
-     * Complexity: O(newRows * newCols) or O(rows * cols) depending on growth/shrinkage.
+     * <p>MATHEMATICAL REQUIREMENT: addition is only defined for two matrices of
+     * identical shape. Each result cell is {@code A[r][c] + B[r][c]}.
+     *
+     * @throws IllegalArgumentException if the dimensions do not match exactly.
      */
-    public void resize(int newRows, int newCols) {
-        if (newRows < 0 || newCols < 0) {
-            throw new IllegalArgumentException("dimensions must be non-negative");
-        }
-        if (newRows == 0 || newCols == 0) {
-            clear();
-            return;
-        }
-
-        // If expanding rows, ensure capacity
-        if (newRows > rows) {
-            ensureRowCapacity(newRows);
-        }
-        
-        // If expanding columns, ensure capacity for all current rows
-        // (Note: ensureColCapacity iterates over 'data.length', covering potential new rows too if they were allocated)
-        if (newCols > cols) {
-            ensureColCapacity(newCols);
-        }
-
-        // If shrinking rows, we just update the 'rows' counter.
-        // But for memory hygiene we might want to nullify or clear removed rows if the drop is significant?
-        // The current implementation of removeRow clears specific slots.
-        // For resize, we will just update the counter 'rows' and 'cols'.
-        // However, if we shrink columns, we don't necessarily reallocate rows, just update 'cols'.
-        // BUT: if we later expand, old data might be there?
-        // Let's ensure that if we expand back, the "new" cells are 0.
-        // If we shrink, we don't need to zero out immediately unless we want to avoid memory leaks (but these are ints).
-        // Since they are primitive ints, no memory leak reference issues.
-        
-        // However, the contract usually implies "new cells are 0".
-        // If we shrink then grow, the "re-grown" cells should be 0.
-        // So if we shrink, we should probably zero out the "dead" area or handle it on growth.
-        // 'ensureColCapacity' copies data.
-        
-        // Implementation strategy:
-        // 1. If changing cols:
-        //    - If growing: existing rows need to be expanded (handled by ensureColCapacity). New cells are 0 by default Java array init.
-        //    - If shrinking: we just reduce 'cols'. But we should zero out the "tail" to be safe? 
-        //      Actually, clear() zeroes everything. removeRow() zeroes.
-        //      Let's zero out the truncated parts for safety.
-        
-        if (newCols < cols) {
-            for (int r = 0; r < rows; r++) {
-                if (data[r] != null) {
-                    Arrays.fill(data[r], newCols, cols, 0);
-                }
-            }
-        }
-        
-        if (newRows < rows) {
-            for (int r = newRows; r < rows; r++) {
-                if (data[r] != null) {
-                    // We can either null the row or fill with 0.
-                    // removeRow keeps the array object but fills with 0 if it's reused?
-                    // actually removeRow allocates a new empty array for the last slot.
-                    // Here we can just fill with 0 to be safe.
-                    Arrays.fill(data[r], 0);
-                }
-            }
-        }
-        
-        // Now update dimensions
-        // Note: if we grew rows, the new rows are already allocated by ensureRowCapacity and are 0-filled by default.
-        // If we grew cols, ensureColCapacity handled reallocation and copy, new slots are 0.
-        
-        this.rows = newRows;
-        this.cols = newCols;
-    }
-
-    /**
-     * Add another matrix to this one and return the result.
-     * C = A + B
-     * Dimensions must match.
-     */
-    public DynamicIntMatrix plus(DynamicIntMatrix other) {
-        Objects.requireNonNull(other);
+    public DynamicIntMatrix add(DynamicIntMatrix other) {
+        Objects.requireNonNull(other, "other matrix must not be null");
         if (this.rows != other.rows || this.cols != other.cols) {
-            throw new IllegalArgumentException("Matrix dimensions must match for addition: " +
-                    rows + "x" + cols + " vs " + other.rows + "x" + other.cols);
+            throw new IllegalArgumentException("Matrix addition requires identical dimensions: "
+                    + this.rows + "x" + this.cols + " vs " + other.rows + "x" + other.cols);
         }
         DynamicIntMatrix result = new DynamicIntMatrix(rows, cols);
         result.rows = rows;
@@ -560,15 +525,18 @@ public class DynamicIntMatrix {
     }
 
     /**
-     * Subtract another matrix from this one and return the result.
-     * C = A - B
-     * Dimensions must match.
+     * Matrix subtraction: {@code C = A - B}.
+     *
+     * <p>MATHEMATICAL REQUIREMENT: subtraction is only defined for two matrices
+     * of identical shape. Each result cell is {@code A[r][c] - B[r][c]}.
+     *
+     * @throws IllegalArgumentException if the dimensions do not match exactly.
      */
-    public DynamicIntMatrix minus(DynamicIntMatrix other) {
-        Objects.requireNonNull(other);
+    public DynamicIntMatrix subtract(DynamicIntMatrix other) {
+        Objects.requireNonNull(other, "other matrix must not be null");
         if (this.rows != other.rows || this.cols != other.cols) {
-            throw new IllegalArgumentException("Matrix dimensions must match for subtraction: " +
-                    rows + "x" + cols + " vs " + other.rows + "x" + other.cols);
+            throw new IllegalArgumentException("Matrix subtraction requires identical dimensions: "
+                    + this.rows + "x" + this.cols + " vs " + other.rows + "x" + other.cols);
         }
         DynamicIntMatrix result = new DynamicIntMatrix(rows, cols);
         result.rows = rows;
@@ -582,13 +550,14 @@ public class DynamicIntMatrix {
     }
 
     /**
-     * Multiply this matrix by a scalar.
-     * C = A * s
+     * Scalar multiplication: {@code C = A * s}.
+     *
+     * <p>Returns a NEW matrix; the original is never modified. Each cell becomes
+     * {@code A[r][c] * s}.
      */
-    public DynamicIntMatrix multiply(int scalar) {
+    public DynamicIntMatrix multiplyByScalar(int scalar) {
         DynamicIntMatrix result = new DynamicIntMatrix(rows, cols);
         if (rows == 0 || cols == 0) return result;
-        
         result.rows = rows;
         result.cols = cols;
         for (int r = 0; r < rows; r++) {
@@ -600,61 +569,267 @@ public class DynamicIntMatrix {
     }
 
     /**
-     * Multiply this matrix by another matrix.
-     * C = A * B
-     * A.cols must equal B.rows.
-     * Result size: A.rows x B.cols.
-     * Complexity: O(A.rows * B.cols * A.cols).
+     * Matrix multiplication: {@code C = A * B}.
+     *
+     * <p>MATHEMATICAL REQUIREMENT: multiplication is defined only when the number
+     * of columns in {@code A} equals the number of rows in {@code B}. The result
+     * has dimensions {@code A.rows x B.cols}. For empty inner dimension the
+     * result is the correctly sized zero matrix.
+     *
+     * @throws IllegalArgumentException if {@code this.cols != other.rows}.
      */
     public DynamicIntMatrix multiply(DynamicIntMatrix other) {
-        Objects.requireNonNull(other);
+        Objects.requireNonNull(other, "other matrix must not be null");
         if (this.cols != other.rows) {
-            throw new IllegalArgumentException("Matrix multiplication undefined: cols " +
-                    this.cols + " != rows " + other.rows);
+            throw new IllegalArgumentException("Matrix multiplication undefined: this.cols ("
+                    + this.cols + ") must equal other.rows (" + other.rows + ")");
         }
         int r1 = this.rows;
-        int c1 = this.cols; // same as r2
+        int c1 = this.cols; // == other.rows
         int c2 = other.cols;
-        
+
         DynamicIntMatrix result = new DynamicIntMatrix(Math.max(r1, 1), Math.max(c2, 1));
         if (r1 == 0 || c1 == 0 || c2 == 0) {
-            // Result is technically r1 x c2, but if any dimension is 0, it's empty.
-            // If r1=0, result is 0 rows.
-            // If c2=0, result is 0 cols.
-            // If c1=0 (inner dim), sum is over empty range -> 0.
-            if (r1 > 0 && c2 > 0) {
-                result.rows = r1;
-                result.cols = c2;
-                // initialized to 0s, which is correct for sum of empty range
-            }
+            // Result is an r1 x c2 zero matrix, which is the mathematically
+            // correct product when the inner dimension is empty.
+            result.rows = r1;
+            result.cols = c2;
             return result;
         }
-
         result.rows = r1;
         result.cols = c2;
 
-        // Naive O(N^3) multiplication
-        // Optimization: Cache row of A and iterate B?
-        // Or just standard loop order (i, k, j) or (i, j, k).
-        // (i, k, j) is usually cache-friendlier for row-major arrays in Java.
-        // i: row in A (and Result)
-        // k: col in A, row in B
-        // j: col in B (and Result)
-        
+        // Classic i,k,j triple loop over row-major storage (cache-friendly).
         for (int i = 0; i < r1; i++) {
             int[] rowA = this.data[i];
             int[] rowRes = result.data[i];
             for (int k = 0; k < c1; k++) {
                 int valA = rowA[k];
-                if (valA == 0) continue; // optimization for sparse-ish matrices
+                if (valA == 0) continue; // skip zero contributions
                 int[] rowB = other.data[k];
                 for (int j = 0; j < c2; j++) {
                     rowRes[j] += valA * rowB[j];
                 }
             }
         }
-        
         return result;
+    }
+
+    /**
+     * Transpose: {@code C[r][c] = A[c][r]}. Always returns a NEW matrix; the
+     * original is never modified. For an m x n matrix the result is n x m.
+     */
+    public DynamicIntMatrix transpose() {
+        if (rows == 0 || cols == 0) {
+            return new DynamicIntMatrix();
+        }
+        DynamicIntMatrix t = new DynamicIntMatrix(cols, rows);
+        t.rows = cols;
+        t.cols = rows;
+        for (int r = 0; r < cols; r++) {
+            for (int c = 0; c < rows; c++) {
+                t.data[r][c] = this.data[c][r];
+            }
+        }
+        return t;
+    }
+
+    /**
+     * Rotate 90 degrees clockwise in place.
+     *
+     * <p>For an m x n matrix the result is an n x m matrix where element
+     * {@code (r, c)} maps to {@code (c, n - 1 - r)}. This correctly handles
+     * non-square matrices (rows become columns and vice-versa, reversed).
+     * This mutates the receiver; nothing is returned.
+     */
+    public void rotate90Clockwise() {
+        if (rows == 0 || cols == 0) return;
+        int newRows = cols;
+        int newCols = rows;
+        int[][] newData = new int[newRows][];
+        for (int i = 0; i < newRows; i++) {
+            newData[i] = new int[newCols];
+        }
+        for (int r = 0; r < rows; r++) {
+            int[] src = data[r];
+            for (int c = 0; c < cols; c++) {
+                newData[c][newCols - 1 - r] = src[c];
+            }
+        }
+        this.data = newData;
+        this.rows = newRows;
+        this.cols = newCols;
+        this.colCapacity = newCols;
+    }
+
+    /**
+     * Extract a submatrix using HALF-OPEN ranges
+     * {@code [startRow, endRow) x [startCol, endCol)}.
+     *
+     * <p>Returns a DEEP COPY (independent backing arrays via
+     * {@link System#arraycopy}); mutating the result never affects this matrix.
+     *
+     * @throws IndexOutOfBoundsException if ranges are invalid or exceed bounds.
+     */
+    public DynamicIntMatrix getSubmatrix(int startRow, int startCol, int endRow, int endCol) {
+        if (startRow < 0 || startCol < 0) {
+            throw new IndexOutOfBoundsException("start indices must be >= 0: ("
+                    + startRow + ", " + startCol + ")");
+        }
+        if (startRow > endRow || startCol > endCol) {
+            throw new IndexOutOfBoundsException("start must not exceed end: ["
+                    + startRow + "," + endRow + ") x [" + startCol + "," + endCol + ")");
+        }
+        if (endRow > rows || endCol > cols) {
+            throw new IndexOutOfBoundsException("end indices exceed matrix bounds: ("
+                    + endRow + "," + endCol + ") vs (" + rows + "," + cols + ")");
+        }
+        int newRows = endRow - startRow;
+        int newCols = endCol - startCol;
+
+        DynamicIntMatrix result = new DynamicIntMatrix(Math.max(newRows, 1), Math.max(newCols, 1));
+        if (newRows == 0 || newCols == 0) {
+            return result;
+        }
+        result.rows = newRows;
+        result.cols = newCols;
+        for (int r = 0; r < newRows; r++) {
+            // Deep copy row by row into the fresh result rows.
+            System.arraycopy(this.data[startRow + r], startCol, result.data[r], 0, newCols);
+        }
+        return result;
+    }
+
+    /**
+     * Backwards-compatible alias for {@link #getSubmatrix(int, int, int, int)}
+     * (original signature order: rowFrom, rowTo, colFrom, colTo).
+     */
+    public DynamicIntMatrix subMatrix(int rowFrom, int rowTo, int colFrom, int colTo) {
+        return getSubmatrix(rowFrom, colFrom, rowTo, colTo);
+    }
+
+    /** @return a completely independent clone (deep copy) of this matrix. */
+    public DynamicIntMatrix deepCopy() {
+        int rc = Math.max(rows, 1);
+        int cc = Math.max(cols, 1);
+        DynamicIntMatrix copy = new DynamicIntMatrix(rc, cc);
+        copy.rows = rows;
+        copy.cols = cols;
+        for (int r = 0; r < rows; r++) {
+            if (data[r] == null) {
+                copy.data[r] = null;
+            } else {
+                // copy.data[r] is already allocated by the constructor at the
+                // correct column capacity; copy the live cells into it.
+                System.arraycopy(data[r], 0, copy.data[r], 0, cols);
+            }
+        }
+        return copy;
+    }
+
+    /**
+     * Ensure the internal storage can hold at least {@code minRows} rows and
+     * {@code minCols} columns without further reallocation. This is the
+     * capacity hint equivalent of ArrayList.ensureCapacity.
+     */
+    public void ensureCapacity(int minRows, int minCols) {
+        ensureRowCapacity(Math.max(minRows, 0));
+        ensureColCapacity(Math.max(minCols, 0));
+    }
+
+    /**
+     * Shrink the internal storage to exactly match the current logical
+     * dimensions. The outer array is truncated to {@code rows} and every row
+     * array is truncated to {@code cols}, reclaiming excess capacity.
+     */
+    public void trimToSize() {
+        if (data.length != rows) {
+            int[][] newData = new int[rows][];
+            int toCopy = Math.min(data.length, rows);
+            System.arraycopy(data, 0, newData, 0, toCopy);
+            data = newData;
+        }
+        for (int r = 0; r < rows; r++) {
+            if (data[r] != null && data[r].length != cols) {
+                int[] nw = new int[cols];
+                System.arraycopy(data[r], 0, nw, 0, cols);
+                data[r] = nw;
+            }
+        }
+        colCapacity = cols;
+    }
+
+    /**
+     * Resize to {@code newRows x newCols}.
+     *
+     * <p>Newly exposed cells are zero-initialised. When shrinking, the trailing
+     * cells/rows are cleaned (zeroed or nullified) so that re-growing later never
+     * leaks stale data and never leaves dangling references.
+     *
+     * @throws IllegalArgumentException if either dimension is negative.
+     */
+    public void resize(int newRows, int newCols) {
+        if (newRows < 0 || newCols < 0) {
+            throw new IllegalArgumentException("dimensions must be non-negative");
+        }
+        if (newRows == 0 || newCols == 0) {
+            clear();
+            return;
+        }
+        int oldRows = rows;
+        int oldCols = cols;
+
+        ensureRowCapacity(newRows);
+        ensureColCapacity(newCols);
+
+        // Allocate any slots within the new row range that were nullified earlier.
+        for (int r = 0; r < newRows; r++) {
+            if (data[r] == null) {
+                data[r] = new int[colCapacity];
+            }
+        }
+        // Anti-fragmentation: nullify slots we are shrinking away.
+        for (int r = newRows; r < oldRows; r++) {
+            data[r] = null;
+        }
+        // Reconcile the column boundary across all retained rows.
+        if (newCols > oldCols) {
+            for (int r = 0; r < newRows; r++) {
+                for (int c = oldCols; c < newCols; c++) {
+                    data[r][c] = 0;
+                }
+            }
+        } else if (newCols < oldCols) {
+            for (int r = 0; r < newRows; r++) {
+                for (int c = newCols; c < oldCols; c++) {
+                    data[r][c] = 0;
+                }
+            }
+        }
+        this.rows = newRows;
+        this.cols = newCols;
+    }
+
+    // ------------------------------------------------------------------
+    // Backwards-compatible aliases
+    // ------------------------------------------------------------------
+
+    /** @deprecated Use {@link #add(DynamicIntMatrix)}. */
+    @Deprecated
+    public DynamicIntMatrix plus(DynamicIntMatrix other) {
+        return add(other);
+    }
+
+    /** @deprecated Use {@link #subtract(DynamicIntMatrix)}. */
+    @Deprecated
+    public DynamicIntMatrix minus(DynamicIntMatrix other) {
+        return subtract(other);
+    }
+
+    /** @deprecated Use {@link #multiplyByScalar(int)}. */
+    @Deprecated
+    public DynamicIntMatrix multiply(int scalar) {
+        return multiplyByScalar(scalar);
     }
 
     @Override
